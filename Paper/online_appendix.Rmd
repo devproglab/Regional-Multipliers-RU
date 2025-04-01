@@ -458,3 +458,41 @@ tab %>%
   prepend_chunks(j = 2:5, as_chunk("\t")) %>%
   tab_settings(j = 2:5, value = ts)
 ```
+
+# Приложение 5. Индекс Джини для подушевого ВРП в России {-}
+
+```{r IneqHist, fig.cap='Индекс Джини для подушевого ВРП в России', fig.width=6.59, dpi=170}
+regineq <- read_excel('../Data/explanatory.xlsx', sheet = 'Ineq') %>%
+  filter(OKATO_id %in% grp$OKATO_id) %>%
+  select(-region) %>%
+  left_join(codes %>% select(OKATO_id, region = Abbrev)) %>% 
+  relocate(region, .before = OKATO_id)
+g <- apply(regineq[,-c(1:4)] %>% as.matrix(), 2, DescTools::Gini, weights = regineq$population, na.rm=T)
+
+ineq <- data.frame(h=seq(as.Date('2005-01-01'), as.Date('2022-01-01'), by = 'year'), gini = g)
+ineq %>%
+  ggplot() +
+  geom_line(aes(x=h, y=gini), linewidth = 1.25) +
+  theme_hse() +
+  labs(x = NULL,
+       y = NULL,
+       linetype = "Guide name"
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    legend.key.size = unit(3,"line")
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
