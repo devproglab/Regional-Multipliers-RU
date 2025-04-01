@@ -1,0 +1,1341 @@
+---
+title: "Неоднородность влияния бюджетной политики на регионы России"
+author: "Илья Гуленков"
+date: "2025-02-18"
+lang: ru
+output: 
+  # bookdown::pdf_document2
+  # officedown::rdocx_document:
+  #   base_format: "bookdown::word_document2"
+  #   reference_docx: "../Technical/template.docx"
+  #   pandoc_args: [ "--csl", "../Technical/apa.csl"]
+  #   global_numbering: true
+  #   plots:
+  #     caption:
+  #       pre: "Рисунок "
+  #       sep: ". "
+  #   tables:
+  #     caption:
+  #       pre: "Таблица "
+  #       sep: ". "
+  bookdown::html_document2:
+    pandoc_args: [ "--csl", "../Technical/apa.csl"]
+    global_numbering: true
+header-includes:
+  - \usepackage{tikz} 
+  - \usepackage[T2A]{fontenc}
+  - \usepackage[main=russian,english]{babel}
+bibliography: ../Literature/RFS.bib
+biblio-style: apalike
+---
+
+\newcommand*\vect[1]{\mathbf{#1}}
+
+```{r Setup, echo = F, include = FALSE}
+opts <- list(template = "../Technical/tikz2pdf-cyr.tex")
+engine <- 'tikz'
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+trace(grDevices:::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+fp <- officer::fp_par(text.align = "justify")
+```
+
+```{r Data, echo = F}
+set.seed(123)
+library(tidyverse)
+library(readxl)
+library(ggtext)
+library(geofacet)
+library(scales)
+library(ggpattern)
+library(ggridges)
+library(ggbreak) 
+library(spatstat)
+library(sandwich)
+library(lmtest)
+library(kableExtra)
+library(ggcorrplot)
+library(cluster)    # clustering algorithms
+library(flextable)
+library(huxtable)
+options(scipen=9999)
+# LOAD STYLING ----
+source("hse_theme.R")
+select <- dplyr::select
+hse_colours <- c("#102D69", "#1656A6", "#BFBFBF", "#E61F3D", "#11A0D7", "#FFD746", "#029C63", "#EB681F")
+# LOAD DATA ----
+QUANTILES <- c(0.15, 0.5, 0.85)
+SIG_OPACITY <- 0.75
+GRADIENT_QUANTILE_LIMITS <- c(0.15,0.85)
+MODEL <- '3v1_1p-MN-SV-1000-15000'
+path <- paste0('../Results/', MODEL)
+grp <- readRDS('../Data/mult_supplementary.RDS')
+explanatory <- readRDS('../Data/explanatory.RDS')
+data <- readRDS(paste0(path,'/',MODEL,'-regIRFs-chol.RDS'))
+codes <- read_xlsx('../Technical/regioncodes.xlsx')
+data <- data %>%
+  left_join(codes %>% select(region = Abbrev, name_rus = `Rus Name`, name_eng = Name, OKATO_id))
+grid <- read.table('../Technical/rus_grid_reg2.csv', header=TRUE, sep=',', encoding = 'UTF-8') %>%
+  mutate(code = ifelse(nchar(code)==10, paste0('0', code), code),
+         code = case_when(
+           code == '71001000000' ~ '71000000000',
+           code == '11001000000' ~ '11000000000',
+           TRUE ~ code
+         )) %>%
+  select(-code_FD, -FD) %>% rename("name" = "name_short")
+data <- data %>%
+  left_join(grid %>% select(OKATO_id=code, name))  %>%
+  relocate(c(OKATO_id, name, name_rus, name_eng), .before = 'variable')
+# NORMALIZE IRFs ----
+## Own Output Multiplier ---- 
+# IRF represents 100 * dlog(y) / dlog(exp) = 100 dy/y * exp/dexp
+# Divide by exp to get 100 (dy/y) / dexp - percentage point change in economic activity index 
+# Following a unit (rubble per capita) change in exp 
+# Then multiply by 0.01 * GRP per capita to normalize shock size to 1% of per capita GRP
+multY <- data %>%
+  filter(region == source,
+         variable == 'y') %>%
+  left_join(grp) %>%
+  group_by(region) %>%
+  mutate(value = Q50,
+         sig68 = Q16*Q84>0,
+         sig80 = Q10*Q90>0) %>%
+  pivot_wider(names_from = 'variable', values_from = 'value') %>%
+  mutate(value = y / exp_level * grp * 0.01,
+         Q16 = Q16 / exp_level * grp * 0.01,
+         Q84 = Q84 / exp_level * grp * 0.01)
+## Own Inflation Multiplier ----
+# IRF represents 100 * dpi / dlog(exp)
+# Cumulate inflation response to get 100 * dlog(P) / dlog(exp) = 100 dP/P * exp/dexp
+# Divide by exp to get 100 (dP/P) / dexp - percentage point change in price level 
+# Following a unit (rubble per capita) change in exp 
+# Then multiply by 0.01 * GRP per capita to normalize shock size to 1% of per capita GRP
+multPi <- data %>%
+  filter(region == source,
+         variable == 'pi') %>%
+  left_join(grp) %>%
+  group_by(region) %>%
+  mutate(value = cumsum(Q50),
+         sig68 = cumsum(Q16)*cumsum(Q84)>0,
+         sig80 = cumsum(Q10)*cumsum(Q90)>0,
+         Q16 = cumsum(Q16),
+         Q84 = cumsum(Q84)) %>%
+  pivot_wider(names_from = 'variable', values_from = 'value') %>%
+  mutate(value = pi / exp_level * grp * 0.01,
+         Q16 = Q16 / exp_level * grp * 0.01,
+         Q84 = Q84 / exp_level * grp * 0.01)
+## Spillover Output Multiplier ---- 
+# IRF represents 100 * dlog(y) / dlog(exp) = 100 dy/y * exp/dexp
+# Divide by exp to get 100 (dy/y) / dexp - percentage point change in economic activity index 
+# Following a unit (rubble per capita) change in exp 
+# Then multiply by 0.01 * GRP per capita to normalize shock size to 1% of per capita GRP
+multspillY <- data %>%
+  filter(!region == source,
+         variable == 'y') %>%
+  left_join(grp %>% 
+              left_join(codes %>% select(source = Abbrev, OKATO_id)) %>%
+              select(-OKATO_id, grp_source = grp, exp_level_source = exp_level)) %>%
+  left_join(grp %>% select(-exp_level)) %>%
+  mutate(value = Q50 / exp_level_source * grp_source * 0.01,
+         sig68 = Q16*Q84>0) %>%
+  group_by(source, h) %>%
+  reframe(value = weighted.mean(value, grp), sig = mean(sig68))
+## Spillover Inflation Multiplier ---- 
+# IRF represents 100 * dpi / dlog(exp)
+# Cumulate inflation response to get 100 * dlog(P) / dlog(exp) = 100 dP/P * exp/dexp
+# Divide by exp to get 100 (dP/P) / dexp - percentage point change in price level 
+# Following a unit (rubble per capita) change in exp 
+# Then multiply by 0.01 * GRP per capita to normalize shock size to 1% of per capita GRP
+multspillPi <- data %>%
+  filter(!region == source,
+         variable == 'pi') %>%
+  left_join(grp %>% 
+              left_join(codes %>% select(source = Abbrev, OKATO_id)) %>%
+              select(-OKATO_id, grp_source = grp, exp_level_source = exp_level)) %>%
+  left_join(grp %>% select(-exp_level)) %>%
+  group_by(region, source) %>%
+  mutate(value = cumsum(Q50), sig68 = cumsum(Q16)*cumsum(Q84)>0) %>%
+  mutate(value = Q50 / exp_level_source * grp_source * 0.01) %>%
+  group_by(source, h) %>%
+  reframe(value = weighted.mean(value, grp), sig = mean(sig68))
+## Spill-in Output Multiplier ---- 
+# IRF represents 100 * dlog(y) / dlog(exp) = 100 dy/y * exp/dexp
+# Divide by exp to get 100 (dy/y) / dexp - percentage point change in economic activity index 
+# Following a unit (rubble per capita) change in exp 
+# Then multiply by 0.01 * GRP per capita to normalize shock size to 1% of per capita GRP
+multspillinY <- data %>%
+  filter(!region == source,
+         variable == 'y') %>%
+  left_join(grp %>% 
+              left_join(codes %>% select(source = Abbrev, OKATO_id)) %>%
+              select(-OKATO_id, grp_source = grp, exp_level_source = exp_level)) %>%
+  left_join(grp %>% select(-exp_level)) %>%
+  mutate(value = Q50 / exp_level_source * grp_source * 0.01,
+         sig68 = Q16*Q84>0) %>%
+  group_by(OKATO_id, name_rus, h) %>%
+  reframe(value = weighted.mean(value, grp_source), sig = mean(sig68))
+## Spill-in Inflation Multiplier ---- 
+# IRF represents 100 * dpi / dlog(exp)
+# Cumulate inflation response to get 100 * dlog(P) / dlog(exp) = 100 dP/P * exp/dexp
+# Divide by exp to get 100 (dP/P) / dexp - percentage point change in price level 
+# Following a unit (rubble per capita) change in exp 
+# Then multiply by 0.01 * GRP per capita to normalize shock size to 1% of per capita GRP
+multspillinPi <- data %>%
+  filter(!region == source,
+         variable == 'pi') %>%
+  left_join(grp %>% 
+              left_join(codes %>% select(source = Abbrev, OKATO_id)) %>%
+              select(-OKATO_id, grp_source = grp, exp_level_source = exp_level)) %>%
+  left_join(grp %>% select(-exp_level)) %>%
+  group_by(region, source) %>%
+  mutate(value = cumsum(Q50), sig68 = cumsum(Q16)*cumsum(Q84)>0) %>%
+  mutate(value = Q50 / exp_level_source * grp_source * 0.01) %>%
+  group_by(OKATO_id, region, h) %>%
+  reframe(value = weighted.mean(value, grp_source), sig = mean(sig68))
+### Own Output Response by Region ----
+peakY <- multY %>%
+  select(OKATO_id, name_rus, h, value, sig68, grp) %>%
+  group_by(OKATO_id, name_rus) %>%
+  mutate(absvalue = abs(value)) %>%
+  summarize(h = h[which.max(absvalue)], value = value[which.max(absvalue)], sig = sig68[which.max(absvalue)]) %>%
+  ungroup() %>%
+  mutate(value = paste0(sprintf("%.2f", round(value,2)), ifelse(sig, '*', ''))) %>%
+  select(-sig) %>%
+  rename_with(~c('OKATO', 'Регион', 'Горизонт', 'Значение'))
+horizonY <- multY %>%
+  select(OKATO_id, name_rus, h, value, sig68, grp) %>%
+  ungroup() %>%
+  select(-region) %>%
+  filter(h %in% c(0,1,2,3,6,12))
+### Own Inflation Response by Region ----
+peakPi <- multPi %>%
+  select(OKATO_id, name_rus, h, value, sig68, grp) %>%
+  group_by(OKATO_id, name_rus) %>%
+  mutate(absvalue = abs(value)) %>%
+  summarize(h = h[which.max(absvalue)], value = value[which.max(absvalue)], sig = sig68[which.max(absvalue)]) %>%
+  ungroup() %>%
+  mutate(value = paste0(sprintf("%.2f", round(value,2)), ifelse(sig, '*', ''))) %>%
+  select(-sig) %>%
+  rename_with(~c('OKATO', 'Регион', 'Горизонт', 'Значение'))
+horizonPi <- multPi %>%
+  select(OKATO_id, name_rus, h, value, sig68, grp) %>%
+  ungroup() %>%
+  select(-region) %>%
+  filter(h %in% c(0,1,2,3,6,12))
+### Output Spillovers and Spill-ins ----
+tableregionspillY <- multspillY %>%
+  left_join(codes %>% select(source = Abbrev, OKATO_id, OKATO = `Rus Name`)) %>%
+  select(-c(source,sig)) %>%
+  filter(h %in% c(0,3,6,12)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = 'h', values_from = 'value') %>%
+  left_join(
+    multspillinY %>%
+      select(-c(name_rus,sig)) %>%
+      filter(h %in% c(0,3,6,12)) %>%
+      ungroup() %>%
+      pivot_wider(names_from = 'h', values_from = 'value', names_prefix = 'SP')
+  ) 
+### Inflation Spillovers and Spill-ins ----
+tableregionspillPi <- multspillPi %>%
+  left_join(codes %>% select(source = Abbrev, OKATO_id, OKATO = `Rus Name`)) %>%
+  select(-c(source,sig)) %>%
+  filter(h %in% c(0,6,12)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = 'h', values_from = 'value') %>%
+  left_join(
+    multspillinPi %>%
+      select(-c(region,sig)) %>%
+      filter(h %in% c(0,6,12)) %>%
+      ungroup() %>%
+      pivot_wider(names_from = 'h', values_from = 'value', names_prefix = 'SP')
+  ) 
+# Own Output Response
+tableY <- multY %>%
+  select(region, OKATO_id, name_rus, h, value, Q16, Q84, sig68, grp) %>%
+  group_by(h) %>%
+  reframe(o = c(min(value), quantile(value, QUANTILES), max(value), 
+                weighted.mean(value, grp), weighted.median(value, grp), mean(sig68),
+                mean(Q16), mean(Q84)), 
+          type = c('Min', paste0(QUANTILES*100,'%'), 'Max', 'Weighted Mean',
+                   'Weighted Median', '% sig', 'CU_l', 'CU_u')) %>%
+  pivot_wider(names_from = 'h', values_from = 'o')
+YMax <- max(tableY[3,] %>% as.numeric(), na.rm=T) %>% round(.,2)
+YMaxHor <- names(tableY)[which.max(tableY[3,] %>% as.numeric())]
+# Own Inflation Response
+tablePi <- multPi %>%
+  select(region, OKATO_id, name_rus, h, value, Q16, Q84, sig68, grp) %>%
+  group_by(h) %>%
+  reframe(o = c(min(value), quantile(value, QUANTILES), max(value), 
+                weighted.mean(value, grp), weighted.median(value, grp), mean(sig68),
+                mean(Q16), mean(Q84)), 
+          type = c('Min', paste0(QUANTILES*100,'%'), 'Max', 'Weighted Mean',
+                   'Weighted Median', '% sig', 'CU_l', 'CU_u')) %>%
+  pivot_wider(names_from = 'h', values_from = 'o')
+# Output Spill-Out Response
+tableYOut <- multspillY %>%
+  select(region = source, h, value, sig) %>%
+  group_by(h) %>%
+  reframe(o = c(min(value), quantile(value, QUANTILES), max(value), mean(value), mean(sig)), 
+          type = c('Min', paste0(QUANTILES*100,'%'), 'Max', 'Mean', '% sig')) %>%
+  pivot_wider(names_from = 'h', values_from = 'o') %>%
+  select(`Статистика`=type, `0`, `1`, `3`, `6`, `12`, `24`)
+# Output Spill-In Response
+tableYIn <- multspillinY %>%
+  group_by(h) %>%
+  reframe(o = c(min(value), quantile(value, QUANTILES), max(value), mean(value), mean(sig)), 
+          type = c('Min', paste0(QUANTILES*100,'%'), 'Max', 'Mean', '% sig')) %>%
+  pivot_wider(names_from = 'h', values_from = 'o') %>%
+  select(`Статистика`=type, `0`, `1`, `3`, `6`, `12`, `24`)
+```
+
+В работе рассматривается влияние расходов региональных бюджетов на экономическую активность в российских регионах. На ежемесячных данных за период с 2009 по 2024 год для 79 регионов оценивается региональный фискальный мультипликатор - процентное изменение индекса деловой активности в ответ на шок бюджетных расходов, эквивалентный 1% подушевого ВРП региона. Медианная величина регионального мультипликатора достигает пика через `r YMaxHor` месяца после шока и составляет `r YMax`%. Более сильный отклик наблюдается в регионах с более высоким подушевым ВВП, высоким уровнем неравенства по доходам и преобладанием занятости на крупных предприятиях. Региональные бюджетные шоки также отражаются на экономике регионов-соседей значимыми спилловер-эффектами, величина которых зависит от размера экономики региона и его внешнеторговых связей. Результаты исследования подтверждают наличие макроэкономических последствий гетерогенности домохозяйств, фрим и регионов, а также демонстрируют, что активная бюджетная политика экономически более развитых регионов может выступать фактором усиления межрегионального неравенства. 
+
+Таким образом, гетерогенность домохозяйств, предприятий и регионов имеет последствия на макроэкономическом уровне.
+ 
+Ключевые слова: фискальный мультипликатор, региональный бюджет, бюджетная политика, региональная неоднородность, пространственные эффекты
+
+JEL: E62, H72, C33
+
+# Введение
+
+Фискальная политика традиционно используется не только в качестве контрциклического инструмента на уровне всей страны, но и для сглаживания региональных диспропорций. Для повышения эффективности перераспределения ресурсов с помощью бюджетного процесса необходимо детальное понимание механизма фискальной трансмиссии и величины возникающих эффектов как во времени, так и в пространстве. В настоящий момент в академической литературе консенсус по этому вопросу отсутствует. 
+
+Для эмпирической оценки фискальных мультипликаторов чаще всего используются структурные векторные авторегрессии или метод локальных проекций. Размер мультипликатора в этом случае критически зависит от выбранной идентификационной стратегии: в зависимости от методологии его значение колеблется от 0.5 до 1.5 и выше [@rameyCanGovernmentPurchases2011]. Современные структурные модели с гетерогенными агентами демонстрируют, что размер мультипликатора тесно связан с предпосылками о распределении дохода в экономике, а также источниках и степени номинальных жёсткостей в экономике [@auclertMPCsMPEsMultipliers2023; @broerFiscalMultipliersHeterogeneousagent2023]. Существующие оценки фискального мультипликатора для России разнятся от 0.1 до 0.9, однако отмечается их неоднородность влияния в зависимости от типа расходов и периода [@zyablickiyOcenkaFiskalnyhMultiplikatorov2020, прил. 1]. В случае России оценки бюджетных мультипликаторов зачастую имеют широкие доверительные интервалы, а отсутствие длинных сопоставимых временных рядов по ключевым переменным затрудняет соотнесение полученных эмпирических результатов с выводами теоретических моделей.
+
+Пространственный аспект влияния мер фискальной политики широко изучен в литературе о *локальных* фискальных мультипликаторах. Полученные с использованием гранулярных данных на уровне регионов и муниципалитетов и нестандартных схем идентификации, локальные мультипликаторы характеризуют разницу в динамике выпуска между регионами, возникающую из-за увеличения государственных расходов в одном регионе по сравнению с другим [@nakamuraFiscalStimulusMonetary2014]. Существующие исследования демонстрируют, что бюджетно-налоговые меры вызывают значимые и разнонаправленные спилловер-эффекты и обладают различной эффективностью в зависимости от композиции расходов бюджета, способа их финансирования, уровня неравенства, остроты кредитных ограничений и паттернов межрегиональной торговли [@chodorow-reichGeographicCrossSectionalFiscal2019; @bernardiniHeterogeneousGovernmentSpending2020]. Полноценная репликация этих подходов на российских данных не представляется возможной из-за отсутствия детализированных данных об экономической активности и госрасходах на локальном уровне. 
+
+Вместе с тем, сильная пространственная дифференция экономического развития России может приводить к неоднородному воздействию макроэкономической политики на экономику регионов. Так, исследования последних лет показывают, что реакция регионов России на изменение ключевой ставки зависит от степени неравенства, отраслевой структуры экономики и уровня конкуренции [@zverevaVliyanieVnutriregionalnogoNeravenstva2024; @zverevaReakciyaBankovskihStavok2024]. Аналогичных исследований о влиянии фискальных мер, насколько известно автору, не проводилось.
+
+Настоящее исследование призвано оценить неоднородность эффектов фискальной политики на уровне регионов России. В нём впервые для анализа воздействия мер фискальной политики в российской экономике использована модель глобальной векторной авторегрессии (GVAR), которая позволяет учитывать межрегиональные взаимосвязи и пространственные спилловер-эффекты. Модель оценивается на месячных данных за период 2009 - 2024 гг. и включает данные о деловой активности, инфляции и исполнению бюджетов на уровне субъектов РФ, а также общероссийские переменные. Для снижения остроты "проклятия размерности" на параметры региональных моделей накладывается априорное распределение Миннесоты [@boeckBGVARBayesianGlobal2022]. Региональные фискальные шоки идентифицируются с помощью декомпозиции ковариационной матрицы по Холецкому.
+
+Решая поставленную задачу, настоящая работа вносит вклад в несколько направлений литературы. 
+
+Во-первых, автор получает оценки фискального мультипликатора для каждого региона России в отдельности, в то время как существующие работы оценивают его только на национальном уровне. Пиковый медианный отклик выпуска на шок госрасходов, эквивалентный 1% ВРП, наблюдается через `r YMaxHor` месяца после шока и достигает `r YMax`%. Более сильный мультипликативный эффект наблюдается в более богатых регионах с высоким уровнем неравенства по доходам, а также более высокой долей занятости на крупных предприятиях. 
+
+Во-вторых, в работе получены оценки "эффектов перелива", т. е. воздействия фискального стимула в одном регионе на экономику его соседей. В работе показано, что величина этих эффектов зависит как от размера регионов, так и от отраслевой структуры ВРП и степени жёсткости регионального рынка труда.
+  
+В-третьих, автор демонстрирует выраженную неоднородность отклика региональной инфляции на шоки бюджетной политики. Медианный накопленный отклик на горизонте 2 лет достигает `r tablePi[3,25] %>% as.numeric() %>% round(.,2)`%. Более сильная реакция инфляции наблюдается в регионах с более высоким уровнем государственного долга, с более высокой долей занятых на малых и средних предприятиях и в государственном секторе. Примечательно, что в момент шока практически в половине регионов инфляция значимо снижается, и отклик сохраняется таковым на протяжении нескольких периодов. Устойчиво отрицательный отклик инфляции на шоки государственных расходов описан в ряде недавних работ [@jorgensenInflationResponseGovernment2022; @choiAreGovernmentSpending2022] и подтверждает ограничения традиционных новокейнсианских DSGE-моделей для анализа последствий шоков госрасходов. 
+
+
+# Обзор литературы
+
+Одной из наиболее часто используемых статистик, суммирующих влияние фискальной политики на экономическую активность, является мультипликатор - величина, определяющая изменение совокупного выпуска в ответ на единичное изменение государственных расходов. В этом разделе приводится краткий обзор подходов к оценке фискального мультипликатора с особым акцентом на использование данных на субнациональном (региональном) уровне. Наличие кросс-секциональной вариации в дополнение к межвременной позволяет точнее идентифицировать последствия фискального стимула, что особенно актуально для стран с относительного короткими макроэкономическими рядами, к которым относится и Россия.
+
+Оценки фискального мультипликатора в эмпирических работах разнятся. Для оценки фискального мультипликатора чаще всего используются структурные векторные авторегрессии или близкий к ним метод локальных проекций. Для идентификации экзогенных шоков политики применяются рекурсивная [@fatasEffectsFiscalPolicy2001] и нарративная [@rameyGovernmentSpendingMultipliers2018] схемы, знаковые ограничения [@mountfordWhatAreEffects2009] или привлечение дополнительной институциональной информации о зависимостях между переменными [@blanchardEmpiricalCharacterizationDynamic2002]. В обзоре работ, посвящённых США, Рэми заключает, что величина мультипликатора лежит между 0.8 и 1.5. При этом отмечается широкий разброс оценок в зависимости от периода, инструмента политики и персистентности шока [@rameyCanGovernmentPurchases2011]. Исследования для стран ОЭСР показывает, что фискальный мультипликатор выше в ходе рецессий [@auerbachFiscalMultipliersRecession2011;@auerbachMeasuringOutputResponses2012;@rameyGovernmentSpendingMultipliers2018] и может зависеть от вклада шоков спроса и предложения в экономическую динамику [@ghassibeStateDependenceFiscal2022]. 
+
+В моделях общего равновесия при анализе размера фискального мультипликатора основное внимание уделяется реакции потребления на шок фискальной политики. Фискальные мультипликаторы в моделях с привычками в потреблении или сталкивающимися с кредитными ограничениями домохозяйствами обычно превышают единицу [@galiUnderstandingEffectsGovernment2007;@zubairyFiscalMultipliersEstimates2014]. При этом показано, что традиционно применяемые для анализа мер монетарной политики новокейнсианские модели с репрезентативным агентом предполагают эмпирически несостоятельный механизм трансмиссии фискальных шоков, доминируемый влиянием прибыли предложение труда. TANK-модели с двумя группами потребителей, в которых "работники" имеют ограниченный доступ к финансовому рынку, а прибыль фирм принадлежит "капиталистам", предсказывают более низкую величину мультипликатора в диапазоне 0.6-0.7 [@cantoreWorkersCapitalistsGovernment2021]. 
+
+Оценки мультипликатора государственных расходов для российской экономики лежат в диапазоне от 0.1 до 0.9, что в среднем ниже, чем для развитых стран [@zyablickiyOcenkaFiskalnyhMultiplikatorov2020]. Исследования также отмечают неоднородность влияния бюджетных расходов в зависимости от типа расходов и рассматриваемого периода. Так, производительные расходы (инфраструктура и здравоохранение) обладают большим эффектом на экономику, чем непроизводительные (национальная оборона и безопасность) [@kudrinByudzhetnayaPolitikaKak2017], а мультипликатор расходов по абсолютной величине ниже, чем мультипликатор бюджетных доходов [@vlasovFiskalnyeMultiplikatoryRossii2018].
+
+До недавнего времени доступность и качество данных позволяли оценивать фискальные мультипликаторы только на национальном уровне. В этом случае в каждый момент времени экономика страны представляет собой точку, а для оценки мультипликатора используется лишь межвременная вариация переменных. Благодаря распространению дезагрегированных данных об экономической активности на субнациональном уровне в последние два десятилетия приобрела популярность концепция *локального мультипликатора* или *относительного мультипликатора в открытой экономике*. Он определяется как разница в динамике выпуска между регионами, возникающую из-за увеличения государственных расходов в одном регионе по сравнению с другим [@nakamuraFiscalStimulusMonetary2014]. Применение моделей, учитывающих как кросс-секциональную, так и межвременную вариацию улучшает статистические свойства оценок, а также позволяет проконтролировать влияние факторов, действующих на все регионы одновременно. К ним относятся общие для всей экономики шоки или макроэкономическая политика на национальном уровне. Проблема идентификации шоков при оценке локального мультипликатора решается с помощью инструментальных переменных [@duporLocalAggregateFiscal2017;@auerbachLocalFiscalMultipliers2020], особенностей системы межбюджетных трансфертов [@chodorow-reichDoesStateFiscal2012;@chodorow-reichGeographicCrossSectionalFiscal2019] и других менее стандартных подходов [@carvalhoLocalFinanceJob2023;@acconciaMafiaPublicSpending2014].
+
+Локальный фискальный мультипликатор не эквивалентен мультипликатору на национальном уровне и поэтому не может использоваться для оценки последствий фискальных мер на уровне всей страны. В сущности, он отражает влияние роста бюджетных расходов одного региона в монетарном союзе, между членами которого установлен фиксированный валютный курс, и центральный банк которого не может ужесточить монетарную политику для отдельного члена союза. Кроме того, локальный мультипликатор включает в себя действие спилловер-эффектов ("эффектов перелива"), которые абсорбируются на национальном уровне. Однако именно мультипликаторы на локальном уровне позволяют детально проанализировать потенциал влияния фискальной политики на межрегиональное неравенство. 
+
+Ключевой вывод обширной литературы о локальных мультипликаторах состоит в том, что для получения практически значимых оценок эффекта фискальной политики с помощью региональных данных необходимо корректно учитывать возникающие спилловер-эффекты. @auerbachLocalFiscalMultipliers2020 выделяют три уровня возникающих спилловер-эффектов:
+
+- Влияние на связанные отрасли, т. е. влияние импульса в одной отрасли на выпуск отраслей, связанных с ней цепочками поставок
+- Влияние на соседние регионы, т. е. влияние импульса в одном регионе на выпуск соседей
+- Эффекты общего равновесия, т. е. влияние импульса в одной отрасли на несвязанные с ней отрасли. Это влияние может транслироваться путем перетока факторов производства, изменения относительных цен или роста спроса благодаря эффекту дохода
+
+Пространственные взаимосвязи между темпами роста и уровнем ВРП в российских регионах хорошо документированы в литературе [@lugovoyEkonomikogeograficheskieInstitucionalnyeAspekty2007;@kholodilinRussianRegionalConvergence2012;@demidovaGosudarstvennyeRashodyNa2021]. Эти взаимосвязи не являются однородными и проявляются в кластерах регионов, близких по географическому положению и уровню развития [@kolomakProstranstvennyeEksternaliiKak2010;@demidovaProstranstvennoAvtoregressionnayaModel2014;@demidovaModeliEkonomicheskogoRosta2016]. В результате реакция регионов на шоки стабилизационных политик может существенно отличаться. До настоящего момента в литературе уделялось внимание только неоднородности реакции регионов России на единую денежно-кредитную политику [@napalkovRazlichiyaEffektahEdinoy2021;@zverevaVliyanieVnutriregionalnogoNeravenstva2024;@zverevaReakciyaBankovskihStavok2024], в то время как дифференциация реакции регионов на меры фискальной политики остаётся неизученной. Настоящее исследование призвано восполнить этот пробел и оценить, как отличается реакция различных регионов России на шоки расходов бюджета, определить причины этих различий и силу пространственных связей между регионами. 
+
+# Спецификация модели
+
+Для оценки влияния бюджетных расходов на экономику регионов применяется модель глобальной векторной авторегрессии (GVAR). GVAR-модель представляет собой обобщение моделей пространственной эконометрики для многомерного случая [@elhorstCrossSectionalDependenceSpillovers2021]. Этот подход предполагает оценку отдельной VARX-модели для каждого из N регионов, в которую в качестве слабо экзогенных переменных входят взвешенные значения соответствующих показателей в других регионах. Благодаря этому оцениваются специфические для каждого региона коэффициенты как при межвременных, так и при пространственных связях. Впоследствии индивидуальные модели объединяются в систему с помощью взвешивающей матрицы [@pesaranModelingRegionalInterdependencies2004].
+
+Несмотря на то, что GVAR изначально разрабатывались для анализа на страновом уровне [@dimauroGVARHandbookStructure2013], эта методология успешно применяется для внутристрановых исследований как в разрезе регионов и городов [@vansteenkisteRegionalHousingMarket2007; @hollySpatialTemporalDiffusion2011], так и на межотраслевом уровне [@hiebertInternationalTradeTechnological2010;@hollyFactorDemandLinkages2012]. В России GVAR применялись для оценки влияния внешнеэкономических шоков [@zubarevPostroenieModeliGVAR2023]. Единственным примером использования GVAR на российских региональных данных выступает работа @napalkovRazlichiyaEffektahEdinoy2021, в которой исследуется неоднородность реакции регионов на шоки ДКП.
+
+В общем виде оцениваемая для региона $i$ модель имеет следующий вид:
+
+\begin{align}
+  \vect{x}_{it} = \vect{a}_{i0} + \vect{a}_{i1} t + \sum_{l=1}^{p_i} \vect{\Phi}_{il} \vect{x}_{i,t-l} + \vect{\Lambda}_{i0} \vect{x}^*_{i,t} + \sum_{l=1}^{q_i} \vect{\Lambda}_{il} \vect{x}^*_{i,t-l} + \vect{D}_{i0} \vect{\omega}_t + \sum_{l=1}^{s_i} \vect{D}_{il} \vect{\omega}_{t-l} + \varepsilon_{it},
+  \label{eq:gvarspec}
+\end{align}
+
+где $\vect{x}_{it}$ - вектор эндогенных переменных, $\vect{x}^*_{i,t}$ - вектор специфических для региона внешних переменных, $\vect{\omega}_t$ - вектор глобальных переменных. Величины $p_i$, $q_i$ и $s_i$ задают порядок лага для соответствующих переменных. Матрицы $\vect{\Phi}_i$, $\vect{\Lambda}_i$ и $\vect{D}_i$ содержат оцениваемые коэффициенты, а вектор $\varepsilon_{it} \sim \text{i.i.d} (0, \Sigma_{ii})$ представляет собой случайные ошибки для региона $i$. В каждую модель включена константа ($\vect{a}_{i0}$) и линейный тренд ($\vect{a}_{i1}$). 
+
+Внешние переменные рассчитываются как взвешенное средние эндогенных переменных:
+
+\begin{align}
+  \vect{x}^*_{it} = \sum_{j=1}^{N} \nu_{ij} \vect{x}_{jt}, 
+\end{align}
+
+где $\nu_{ij}$ - вес, характеризующий силу экономических связей между регионами. При этом $\nu_{ij} = 0$ и $\sum_{j=1}^N \nu_{ij} = 1$.
+
+Для глобальных переменных специфицируется отдельная VAR-модель:
+
+\begin{align}
+  \vect{\omega}_t = \sum_{l=1}^{p_\omega} \vect{\Phi}_{\omega l} \vect{\omega}_{t-l} + \sum_{l=1}^{q_\omega} \vect{\Lambda}_{\omega l} \vect{x}^*_{\omega,t-l} + \eta_{\omega t}
+\end{align}
+
+Ненулевые матрицы $\vect{\Lambda}_{\omega l}$ позволяют глобальным переменным зависеть от кросс-секциональных средних $\vect{x}^*_{\omega,t-l}$.
+
+Для оценки параметров модели применяется байесовский подход. Обозначим за $\Psi_i$ вектор, содержащий все оцениваемые параметры для региона $i$, т.е. $(\vect{a}_{i0}, \vect{a}_{i1}, \vect{\Phi}_{i0}, \dots, \vect{\Lambda}_{i0}, \dots, \vect{D}_{i0})^T$. Коэффициенты региональных моделей имеют априорное нормальное распределение:
+
+\begin{align}
+\Psi_i \sim \mathcal{N}(\underline{\Psi}_i,\underline{V}_i)
+\end{align}
+
+Априорное среднее $\underline{\Psi}_i$ для всех коэффициентов установлено равным нулю. Априорная дисперсия $\underline{V}_i$ специфицирована согласно варианту распределения Миннесоты, который предполагает, что объясняющая способность выше для 1) собственных лаговых значений по сравнению с лагами других переменных, и 2) более близких лагов по сравнению с дальними [подробнее см. @boeckBGVARBayesianGlobal2022].
+
+# Данные и оценка модели
+
+Поскольку публичные региональные данные о распределении расходов федерального бюджета по субъектам отсутствуют, в данной работе мы фокусируемся на последствиях шоков расходов региональных бюджетов и возникающих спилловер-эффектах. Под региональным бюджетным стимулом мы понимаем изменение расходов консолидированного бюджета субъекта, включающее расходы входящих в него муниципалитетов.
+
+На наш взгляд, для удовлетворительного моделирования пространственных и временных взаимосвязей между экономиками регионов России, использование данных квартальной или, тем более, годовой частоты не является достаточным. В первую очередь это связано с тем, что меры фискальной политики обладают коротким внешним лагом трансмиссии и их влияние на региональную экономику, вероятнее всего, транслируется внутри года. Кроме того, работа с GVAR-моделью высокой размерности на коротких квартальных или годовых рядах, вероятнее всего, не будет иметь успеха из-за необходимости оценки большого числа коэффициентов на коротких временных рядах.
+
+Исходя из этого в работе отдаётся предпочтение данным месячной частоты, основанным на статистике Росстата и Федерального Казначейства. Переменные в модели делятся на три категории:
+
+- **Региональные переменные** включают логарифм индекса деловой активности ($100\log(y_{it})$), региональную инфляцию в виде лог-разностей регионального ИПЦ ($100\log(P_{it})$), а также исполнение расходов коносолидированного бюджета субъекта на душу населения в реальном выражении ($\log(g_{it})$). 
+- **Внешние переменные** в GVAR-модели представляют собой уникальную для каждого региона взвешенную комбинацию региональных переменных, относящихся к его регионам-соседям. В качестве взвешивающей матрицы мы применяем матрицу межрегиональных торговых потоков за 2016 год по данным Росстата^[Конструирование подобной матрицы из статистики, опубликованной после 2016 года, не представляется возможным.].
+- **Глобальные переменные** представляют собой общие для всех регионов России факторы: ставку денежного рынка RUONIA ($i_t$), а также логарифмы цены на нефть марки Urals ($\log(poil_t)$), валютного курса рубля к доллару ($\log(e_t)$), расходов ($\log(g_t)$) и доходов ($\log(tx_t)$) федерального бюджета. Глобальные переменные могут реагировать на усреднённую региональную динамику. Таким образом, например, уравнение ставки процента представляет собой вариант правила Тейлора, в котором центральный банк реагирует на средневзвешенную региональную инфляцию и выпуск. 
+
+```{r ModelStructure, fig.cap = "Структура GVAR-модели", fig.ext='png', fig.width = 7, engine.opts = opts, engine=engine}
+\usetikzlibrary{calc,positioning,patterns,angles,intersections,ext.paths.ortho,shapes.multipart,fit,matrix,shadows,shadows.blur,arrows,shapes,arrows.meta,positioning,decorations.pathreplacing,quotes}
+\newsavebox{\test}
+\savebox{\test}{\begin{tikzpicture}[%
+    ,node distance=5mm
+    ,>=latex'
+    ,blockbig/.style = {%
+    ,draw
+    ,minimum height=10mm,minimum width=28mm
+    ,align=center
+    }
+    ,blocksmall/.style = {%
+    ,draw
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center
+    }
+    ,blocksmalltext/.style = {%
+    ,draw=black!60
+    ,minimum height=10mm,minimum width=20mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ,textsmall/.style = {%
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ,every path/.style={->} 
+    ] 
+\node[blocksmalltext, anchor = south west] (exp1) {Расходы\\бюджета};
+%\node[blocksmalltext, right = of exp1] (wage1) {Заработные\\платы};
+\node[blocksmalltext, below left = 0.5 cm and -0.5 cm of exp1] (y1) {Выпуск};
+\node[blocksmalltext, below right = 0.5 cm and -0.5 cm of exp1] (infl1) {Инфляция};
+%\draw[<->] (exp1.east) -- (wage1.west);
+%\draw[<->] (wage1.south west) -- (y1.north east);
+%\draw[<->] (infl1.east) -- ($(infl1.east) +(0.2,0)$) |- (wage1.east); 
+\draw[<->] (y1.east) -- (infl1.west);
+\draw[<->] (y1.west) -- ($(y1.west) +(-0.2,0)$) |- (exp1.west);
+\draw[<->] (infl1.east) -- ($(infl1.east) +(0.2,0)$) |- (exp1.east); 
+\end{tikzpicture}}
+\begin{tikzpicture}[%
+    ,node distance=5mm
+    ,>=latex'
+    ,blockbig/.style = {%
+    ,draw
+    ,minimum height=10mm,minimum width=28mm
+    ,align=center
+    }
+    ,blocksmall/.style = {%
+    ,draw
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center
+    }
+    ,blocksmalltext/.style = {%
+    ,draw=black!60
+    ,minimum height=10mm,minimum width=20mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ,textsmall/.style = {%
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ]
+    \node (r1) {\usebox{\test}};
+    \node[right = of r1.south east] (r2) {$\dots$};
+    \node[right = 1.5 cm of r1] (rN) {\usebox{\test}};
+    \draw[decorate,decoration={brace,mirror}] (r1.south west) --
+        node[below,align=center] (regname1) {Регион 1\\VAR} (r1.south east);
+    \draw[decorate,decoration={brace,mirror}] (rN.south west) --
+        node[below,align=center] (regnameN) {Регион $N$\\VAR} (rN.south east);
+    \node[blocksmalltext, below = 1 cm of r2] (tradeflows) {Матрица торговых потоков};
+    % \draw[<->] (regname1) -- node[below, midway, align=center]{Спилловер-эффекты} (regnameN);
+    \draw[<->] (regname1) -- (regnameN);
+    \draw[->] (tradeflows.north) -- (r2);
+    \node[below = 0 cm of tradeflows.south] {Спилловер-эффекты};
+    \draw[thick] ($(r1.north west) +(-0.2,0.2)$) rectangle ($(tradeflows.south-|rN.south east) + (0.2,-0.5)$);
+    \node[blocksmalltext, above right = 1.1 cm of rN] (urals) {Цена Urals};
+    \node[blocksmalltext, right = of urals] (fedbudg) {Фед.\\бюджет};
+    \node[blocksmalltext, above = of urals] (exrate) {USD/RUB};
+    \node[blocksmalltext, above = of fedbudg] (i) {Ставка\\RUONIA};
+    \draw[<->] (urals.north) -- (exrate.south);
+    \draw[<->] (urals.east) -- (fedbudg.west);
+    \draw[<->] (i.south) -- (fedbudg.north);
+    \draw[<->] (exrate.east) -- (i.west);
+    \draw[<->] (exrate.south east) -- (fedbudg.north west);
+    \draw[<->] (i.south west) -- (urals.north east);
+    \node[textsmall, above = -0.05 cm of $(exrate.north)!0.5!(i.north)$, align=center] (du) {\textbf{Dominant Unit}};
+    \draw[thick] ($(urals.north west) +(-0.2,2)$) rectangle ($(fedbudg.south east) + (0.2,-0.2)$);
+    \draw[->] ($(urals.west) +(-0.2,0)$) -| node[near start, above, xshift=-0.05cm] {Глобальные переменные, внешние шоки} ($(tradeflows.north|-urals.west) + (0,-1)$);
+    \draw[<-] ($(urals.south)!0.5!(fedbudg.south) +(0,-0.2)$) |- node[midway, below, align = center] {Функция реакции\\правительства} ($(rN.east) + (0.2,0)$);   
+\end{tikzpicture}
+```
+
+Прокси-индикатор деловой активности рассчитан на основе данных Росстата о динамике промышленного производства, выпуска в строительной отрасли, розничной торговли и платных услуг населению, взвешенных по долям соответствующих секторов в ВРП. Подробности о способе этого и других индикаторов приведены в Приложении 1. Структура используемой модели приведена на Рисунке \@ref(fig:ModelStructure).
+
+Выборка ограничена периодом с ноября 2009 г. по апрель 2024 г. из-за отсутствия более ранних помесячных данных о региональной деловой активности. Из-за неудовлетворительного качества и отсутствия некоторых исходных данных, из анализа исключаются Ненецкий, Ханты-Манскийский, Ямало-Ненецкий и Чукотский автономные округа, а также Республика Крым и Севастополь. В результате мы оцениваем 79 региональных моделей и 1 dominant-unit модель, которые впоследствии объединяются в единую GVAR-структуру для последующего анализа^[Подробнее о технических деталях см. [@pesaranModelingRegionalInterdependencies2004]]. Мы используем по одному лагу для эндогенных и внешних переменных в каждой региональной модели.
+
+Оценка параметров модели осуществляется с помощью пакета BGVAR [@boeckBGVARBayesianGlobal2022] в среде R. Оценка производится с помощью метода Монте-Карло для марковских цепей (Markov Chain Monte Carlo, MCMC) с использованием 16000 итераций. Для минимизации влияния начальных значений на сходимость цепи первые 15000 итераций отбрасываются. Поскольку выборка включает в себя качественно отличающиеся периоды (посткризисное восстановление 2009 - 2010 гг., спад 2015 - 2016 гг, а также внешние шоки 2022 г. и последовавшую структурную перестройку), мы оцениваем модель со стохастической волатильностью остатков, которая может меняться во времени. 
+
+```{r ModelStability}
+summ <- readRDS(paste0(path,'/',MODEL,'-summary.RDS'))
+n <- str_extract(summ$CD, '\\d+\\.\\d+\\%')
+n <- as.numeric(substr(n, 1, nchar(n)-1))
+conv <- round((1-n/100)*100,1)
+```
+
+Перед работой с моделью проводится диагностика сходимости марковских цепей к целевому распределению. Тест Гевеке, сравнивающий среднее значение параметра в начале и конце цепи, демонстрирует, что на 95%-м уровне значимости можно констатировать сходимость для `r conv`% параметров. 
+
+<!-- # ```{r Autocorr, tab.cap = 'F-тест автокорреляции в остатках', tab.id = "Autocorr"} -->
+<!-- # summ$res %>% -->
+<!-- #   as.data.frame(.) %>% -->
+<!-- #   rownames_to_column() %>% -->
+<!-- #   rename_with(~c('p-value', 'Число переменных', '%')) %>% -->
+<!-- #   flextable() %>% -->
+<!-- #   autofit() %>% -->
+<!-- #   flextable::align(align = "center", part = "all") %>% -->
+<!-- #   colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>% -->
+<!-- #   set_table_properties(layout = "autofit") %>% -->
+<!-- #   flextable::font(fontname = 'Times New Roman', part = 'all') -->
+<!-- # ``` -->
+
+```{r Crosscorr, tab.cap = 'Кросс-секциональные корреляции переменных', tab.id = "Crosscorr"}
+ summ$crosscorrdata[,1:3] %>%
+   as.data.frame(.) %>%
+   rownames_to_column() %>%
+   left_join(summ$crosscorr[,1:3] %>%
+   as.data.frame(.) %>%
+   rownames_to_column(), by = 'rowname') %>%
+   relocate(exp.y, .before = y.x) %>%
+   relocate(y.y, .before = pi.x) %>%
+   flextable() %>%
+   autofit() %>%
+   flextable::align(align = "center", part = "all") %>%
+   add_header_row(values = c(" ", "Госрасходы", "Выпуск", "Инфляция"), colwidths = c(1, 2,2,2)) %>%
+   labelizor(part = "header", labels = c("rowname" = "Коэффициент корреляции", "exp.x" = "Данные", "exp.y" = "Остатки модели", "y.x" = "Данные", "y.y" = "Остатки модели", "pi.x" = "Данные", "pi.y" = "Остатки модели")) %>%
+   colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+   set_table_properties(layout = "autofit") %>%
+   flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+F-тест на автокорреляцию в остатках демонстрирует, что для половины переменных модели гипотеза об отсутствии автокорреляции не отвергается на 1% уровне значимости^[Увеличение порядка лагов снижает долю значимых автокорреляций, однако приводит к тому, что модели для некоторых регионов становятся нестабильными, а также существенно повышает параметризацию модели и время её оценки. Величина медианного отклика выпуска и инфляции устойчивы к изменению порядка лага. В связи с этим принято решение сохранить порядок лага, равный одному.]. Проведение валидного структурного анализа в GVAR, однако, требует в первую очередь отсутствия существенной корреляции между остатками в уравнениях для различных регионов. В Таблице \@ref(tab:Crosscorr) для каждой переменной приведено число регионов, для которых корреляция со всеми остальными регионами лежит в указанном диапазоне. Исходные данные демонстрируют высокую корреляцию всех трёх показателей между регионами. Остатки модели для уравнений выпуска и инфляции, напротив, практически не коррелированы между собой, в то время как в остатках инфляции сохраняется высокая корреляция. Эти результаты подтверждают преобладание общероссийского фактора в динамике инфляции [@deryuginaOtraslevyeRegionalnyeFaktory2018]. Настоящая работа, однако, не ставит целью построение полной модели региональной инфляции. Ключевой интерес представляет реакция выпуска и инфляции на региональные шоки государственных расходов, чему наличие остаточной корреляции не препятствует. 
+
+# Анализ импульсных откликов
+
+Как и в стандартных VAR, остатки GVAR-модели в приведённой форме не могут быть интерпретированы как структурные экономические шоки, так как представляют собой их линейные комбинации. В данной работе мы применяем широко известную рекурсивную схему идентификации, предполагающую, что региональные шоки спроса и предложения не оказывают влияния на величину государственных расходов в текущем периоде [@blanchardEmpiricalCharacterizationDynamic2002]. Подобное ограничение отражает внутренний лаг фискальной политики и является оправданным на данных месячной частоты. В качестве альтернативной схемы идентификации в GVAR-литературе предлагается использование генерализованных импульсных откликов [@chudikTHEORYPRACTICEGVAR2016]. Полученные в этой работе результаты качественно устойчивы к использованию этой идентификационной стратегии. Отметим, что идентификация в GVAR-моделях является локальной: идентифицированный шок госрасходов ортогонален другим региональным шокам, но может коррелировать с шоками расходов в других регионах. На практике эта корреляция оказывается положительной, но пренебрежительной малой по своему размеру. 
+
+Поскольку исходная модель специфицирована в логарифмах, импульсные отклики отражают эластичности, а не мультипликаторы в классическом понимании (рублевое изменение выпуска в ответ на рублевый шок госрасходов). В рамках данного исследования получение оценок мультипликатора дополнительно осложняется тем, что данные о деловой активности изначально измерены в виде безразмерного индекса. Осознавая ограничения этого подхода, в дальнейшем под мультипликатором выпуска в регионе $i$ в ответ на шок госрасходов в регионе $j$ на горизонте $h$ мы понимаем следующую величину:
+
+\begin{align}
+mult^y_{ijh} = IRF^{y,g}_{ijh} \times \frac{1}{\bar{g}_j} \times \overline{GRP}_j \times 0.01
+\end{align}
+
+где $IRF^{y,g}_{ijh}$ функция импульсного отклика выпуска на шок госрасходов, $\bar{g}_j$ - средний уровень расходов бюджета на душу населения в регионе, а $\overline{GRP}_j$ - средний уровень ВРП на душу населения в реальном выражении за весь период выборки. Влияние расходов бюджета на региональный уровень цен определяется с помощью мультипликатора уровня цен:
+
+\begin{align}
+mult^P_{ijh} = \sum_{k=0}^h IRF^{\pi,g}_{ijk} \times \frac{1}{\bar{g}_j} \times \overline{GRP}_j \times 0.01
+\end{align}
+
+где $IRF^{\pi,g}_{ijk}$ функция импульсного отклика инлфяции на шок госрасходов. В результате этих преобразований $mult^y_{ijh}$ отражает процентную реакцию выпуска в регионе в ответ на шок госрасходов, эквивалентный 1% ВРП региона, а $mult^P_{ijh}$ - накопленное влияние аналогичного шока на уровень цен. 
+
+```{r OwnY, tab.cap = 'Мультипликатор выпуска, шок расходов 1% ВРП', tab.id = "OwnY"}
+tableY %>%
+  filter(!type == 'Weighted Median') %>%
+  mutate(type = c('Минимум',
+                  '15-й перцентиль',
+                  'Медиана',
+                  '85-й перцентиль',
+                  'Максимум',
+                  'Взвешенное среднее',
+                  'Доля значимых',
+                  'Средняя нижняя граница 68% интервала',
+                  'Средняя верхняя граница 68% интервала'
+                  )) %>%
+  select(`Статистика`=type, `0`, `1`, `3`, `6`, `12`, `24`) %>%
+  flextable() %>%
+  autofit() %>%
+  flextable::align(align = "center", part = "all") %>%
+  add_header_row(values = c(" ", "Горизонт (месяцев)"), colwidths = c(1,6)) %>%
+  labelizor(part = "header", labels = c("rowname" = "Коэффициент корреляции", "exp.x" = "Данные", "exp.y" = "Остатки модели", "y.x" = "Данные", "y.y" = "Остатки модели", "pi.x" = "Данные", "pi.y" = "Остатки модели"))%>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+В таблице \@ref(tab:OwnY) приведены ключевые описательные статистики, характеризующие распределение полученных мультипликаторов. При подсчёте взвешенных средних региональных мультипликаторов в качестве весов используется величина среднего подушевого ВВП за период 2009 - 2024 гг. Результаты расчётов для каждого региона в отдельности доступны в Приложении 2. 
+
+```{r OwnYDyn, fig.cap='Реакция выпуска на шок расходов бюджета в российских регионах', dpi=170, fig.width=7}
+tableY %>%
+  ungroup() %>%
+  filter(!type == '% sig') %>%
+  pivot_longer(-type, names_to = 'h') %>%
+  pivot_wider(names_from = 'type', values_from = 'value') %>%
+  mutate(h = as.numeric(h)) %>%
+  rename_with(~c('h','Min','Ql','Med','Qh','Max','Wmean','Wmed','CU_l','CU_u')) %>%
+  ggplot() +
+  geom_line(aes(x=h, y=Med, group = 1, colour = 'Медиана'), linewidth = 1) +
+  geom_line(aes(x=h, y=Wmean, group = 2, colour = 'Взвешенное среднее'), linewidth = 1) +
+  geom_ribbon(aes(x=h, ymin = CU_l, ymax=CU_u, group = 1, fill = 'Средние границы достоверного интервала (68%)'), alpha = 0.3) +
+  scale_fill_manual("",values="grey") +
+  scale_colour_manual(values = c('Медиана' = 'darkgrey', 'Взвешенное среднее' = 'black')) +
+  guides(colour=guide_legend(ncol=3, order = 1), fill = guide_legend(order=2)) +
+  theme_hse() +
+  labs(x = 'Горизонт, месяцев',
+       y = '%',
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+
+На рисунке \@ref(fig:OwnYDyn) приведена динамика отклика деловой активности во времени. В подавляющем большинстве регионов отклик выпуска имеет ожидаемый положительный знак в момент шока. Его величина значима примерно в половине регионов^[Для определения значимости применяется 68%-й достоверный интервал]. Влияние госрасходов на выпуск достигает своего пика в среднем через 3 месяца после шока: медианный мультипликатор на этом горизонте равен `r tableY[3,5] %>% as.numeric() %>% round(.,2)`%, а средневзвешенный - `r tableY[6,5] %>% as.numeric() %>% round(.,2)`%. При этом влияние шока характеризуется высокой персистентностью и сохраняется положительным на горизонте двух лет. Траектория государственных расходов, напротив, возвращается к дошоковой в течение одного квартала.
+
+Полученные результаты в целом согласуются по величине с существующими оценками, хотя и оказываются несколько выше известных результатов для России [@zyablickiyOcenkaFiskalnyhMultiplikatorov2020]. Это может быть связано как минимум с двумя факторами. Во-первых, существующие исследования фокусируются на расходах федерального бюджета^[В отдельных случаях рассматривается консолидированный бюджет, примерно половина расходов которого приходится на федеральный], в котором выше доля "непродуктивных" расходов (общегосударственные вопросы, национальная оборона и безопасность), обладающих меньшим мультипликативным эффектом [@kudrinByudzhetnayaPolitikaKak2017]. Кроме того, в качестве индикатора деловой активности в данном исследовании используется композитный индекс динамики отраслей, доля которых в ВДС регионов колеблется от 20-30% (Республика Калмыкия, Камчатский край, Республика Ингушетия) до 80% и выше (Тюменская, Сахалинская, Кемеровская область, Красноярский Край). В результате мультипликаторы, оценённые с опорой на весь ВВП, могут отличаться от оценок по подмножеству его отраслей. 
+
+```{r OwnPi, tab.cap = 'Мультипликатор уровня цен, шок расходов 1% ВРП', tab.id = "OwnPi"}
+tablePi %>%
+  filter(!type == 'Weighted Median') %>%
+  mutate(type = c('Минимум',
+                  '15-й перцентиль',
+                  'Медиана',
+                  '85-й перцентиль',
+                  'Максимум',
+                  'Взвешенное среднее',
+                  'Доля значимых',
+                  'Средняя нижняя граница 68% интервала',
+                  'Средняя верхняя граница 68% интервала'
+                  )) %>%
+  select(`Статистика`=type, `0`, `1`, `3`, `6`, `12`, `24`) %>%
+  flextable() %>%
+  autofit() %>%
+  flextable::align(align = "center", part = "all") %>%
+  add_header_row(values = c(" ", "Горизонт (месяцев)"), colwidths = c(1,6)) %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+Влияние региональных бюджетных расходов на уровень цен приведено в таблице \@ref(tab:OwnPi) и на рисунке \@ref(fig:OwnPiDyn). Медианный накопленный отклик на горизонте 2 лет достигает `r tablePi[3,25] %>% as.numeric() %>% round(.,2)`%, а средний - `r tablePi[6,25] %>% as.numeric() %>% round(.,2)`%. Наибольшая доля значимых откликов наблюдается в первые месяцы после шока, после чего ширина достоверных интервалов увеличивается. В отличие от реакции выпуска, которая совпадает по знаку практически во всех регионах, в отклике уровня цен наблюдается разнонаправленная динамика. В первые месяцы после шока государственных расходов в `r multPi %>% filter(h==0) %>% filter(value < 0 & sig68 == T) %>% nrow()` регионах инфляция значимо снижается, и лишь впоследствии отклик уровня цен выходит в положительную область. Значимый положительный отклик наблюдается лишь в `r multPi %>% filter(h==0) %>% filter(value > 0 & sig68 == T) %>% nrow()` регионах.  
+
+```{r OwnPiDyn, fig.cap='Реакция уровня цен на шок расходов бюджета в российских регионах', dpi=170, fig.width=7}
+tablePi %>%
+  ungroup() %>%
+  filter(!type == '% sig') %>%
+  pivot_longer(-type, names_to = 'h') %>%
+  pivot_wider(names_from = 'type', values_from = 'value') %>%
+  mutate(h = as.numeric(h)) %>%
+  rename_with(~c('h','Min','Ql','Med','Qh','Max','Wmean','Wmed','CU_l','CU_u')) %>%
+  ggplot() +
+  geom_line(aes(x=h, y=Med, group = 1, colour = 'Медиана'), linewidth = 1) +
+  geom_line(aes(x=h, y=Wmean, group = 2, colour = 'Взвешенное среднее'), linewidth = 1) +
+  geom_ribbon(aes(x=h, ymin = CU_l, ymax=CU_u, group = 1, fill = 'Средние границы достоверного интервала (68%)'), alpha = 0.3) +
+  scale_fill_manual("",values="grey") +
+  scale_colour_manual(values = c('Медиана' = 'darkgrey', 'Взвешенное среднее' = 'black')) +
+  guides(colour=guide_legend(ncol=3, order = 1), fill = guide_legend(order=2)) +
+  theme_hse() +
+  labs(x = 'Горизонт, месяцев',
+       y = '%',
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+
+Подобный результат не согласуется с конвенциональной интуицией и выводами базовых новокейнсианских моделей, в которых государственные расходы являются непродуктивными и воздействуют на экономику лишь со стороны спроса. Однако незначимый или отрицательный отклик инфляции на шоки госрасходов встречается в эмпирических оценках чаще, чем положительный (см. обзор @jorgensenInflationResponseGovernment2022). В рамках новокейнсианской логики такая реакция возможна, если в ответ на шок сокращается реальная заработная плата и предельные издержки, падает монопольная наценка или увеличивается производительность труда. Для действия первого эффекта необходимо выраженное рикардианское поведение домохозяйств, доля которых в экономике России не превышает 25-30% [@gudkovaNeodnorodnostDomohozyaystvRossii2024]. Контрциклическая динамика наценок может возникать в случае, если потребители формируют "глубокие" привычки (deep habits) на уровне отдельных товаров, что делает оптимальным для производителей снижение наценки в ответ на положительный шок спроса [@zubairyFiscalMultipliersEstimates2014]. Канал производительности предполагает, что шоки государственных расходов стимулируют фирмы более активно внедрять существующую технологию в производство, что позволяет им снизить предельные издержки и цены. Проверка указанных гипотез существенно повышает требования к исходным данным и выходит за рамки настоящей работы, однако представляется перспективной с точки зрения будущих исследований.
+
+Помимо оценок прямых эффектов бюджетных расходов на экономику регионов, мы также рассчитываем среднюю величину двух спилловер-эффектов: spill-out и spill-in. Под эффектом spill-out понимается средняя реакция интересующей переменной (например, выпуска) в регионе $i$ на шок госрасходов в регионе $j$, $i \neq j$:
+
+\begin{align}
+SO_j = \sum_{i\neq j} \omega_{i} mult^y_{ijh},
+\end{align}
+
+где $\omega_i=\frac{GRP_i}{\sum_k GRP_k}$. Величина spill-out эффекта отражает, насколько сильно другие регионы реагируют на шоки бюджетных расходов в заданном регионе. Эффект spill-in, напротив, определяется как чувствительность заданного региона к государственным расходам в других регионах:
+
+\begin{align}
+SI_i = \sum_{j\neq i} \omega_j mult^y_{ijh},
+\end{align}
+
+где $\omega_j = \frac{GRP_j}{\sum_k GRP_k}$. 
+
+```{r SpillY, tab.cap = 'Спилловер-эффекты, шок расходов 1% ВРП', tab.id = "SpillY"}
+tableYOut %>%
+  left_join(tableYIn, by = 'Статистика', suffix = c('','.')) %>%
+  mutate(`Статистика` = c('Минимум',
+                  '15-й перцентиль',
+                  'Медиана',
+                  '85-й перцентиль',
+                  'Максимум',
+                  'Среднее',
+                  'Доля значимых'
+                  )) %>%
+  flextable() %>%
+  autofit() %>%
+  flextable::align(align = "center", part = "all") %>%
+  add_header_row(values = c(" ", "Эффект spill-out", "Эффект spill-in"), colwidths = c(1,6,6)) %>%
+  add_header_row(values = c(" ", "Горизонт (месяцев)"), colwidths = c(1,12)) %>%
+  labelizor(part = "header", labels = c("0." = "0", "1." = "1", "3." = "3", "6." = "6", "12." = "12", "24." = "24")) %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+Полные результаты расчётов приведены в Приложении 3. Спилловер-эффекты в динамике инфляции практически отсутствуют: их абсолютное значение в большинстве регионов не превышает сотой доли процента. В реальном секторе спилловер-эффекты оказываются более выражены (см. Таблицу \@ref(tab:SpillY)). На горизонте 1 года 1%-й рост подушевых госрасходов в одном регионе приводит к росту деловой активности других регионов в среднем на `r tableYOut[6,6] %>% as.numeric() %>% round(.,2)`%. Средний регион России реагирует на изменение расходов бюджета в других регионах на `r tableYIn[6,6] %>% as.numeric() %>% round(.,2)`%. В обоих случаях около 75% откликов значимо отличаются от нуля.
+ 
+# Факторы гетерогенности
+
+Полученные результаты демонстрируют, что влияние бюджетных расходов на региональную экономику, а также сила возникающих спилловер-эффектов имеют выраженную региональную неоднородность. На карте (см. Рисунок \@ref(fig:OwnYMap)) приведено пространственное распределение отклика выпуска на горизонте 3 месяцев, что приблизительно отражает пиковое воздействие шока бюджетных расходов на экономику. 
+
+```{r OwnYMap, fig.cap='Мультипликатор выпуска на горизонте 3 месяцев', fig.width=7, dpi=400}
+limits <- multY %>%
+  filter(h == 3) %>%
+  pull(value) %>%
+  quantile(GRADIENT_QUANTILE_LIMITS)
+multY %>% 
+  filter(h == 3) %>%
+  ggplot() +
+  geom_rect_pattern(mapping=aes(xmin=1, xmax=2, ymin=1, ymax=2, fill=value,
+                                pattern_alpha = !sig68,
+                                alpha = !sig68),
+                    color=NA) +
+  facet_geo(~ OKATO_id, grid = grid) +
+  scale_alpha_manual(values = c('TRUE' = SIG_OPACITY, 'FALSE' = 1)) + 
+  scale_pattern_alpha_manual(values = c('TRUE' = SIG_OPACITY, 'FALSE' = 0)) + 
+  labs(x='', y='', caption = 'Значимые отклики обозначены цветом') +
+  theme(legend.position = 'none',
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.caption = element_text(size = 20),
+        strip.placement = "bottom",
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        line = element_blank(),
+        panel.spacing = unit(-2, "points")
+  ) +
+  # Тонкая настройка подписей: <краткое название субъекта> <+/-> <значение>%
+  geom_text(aes(x = 1.5, y = 1.5, label = paste0(name,'\n', round(value,2), '%')),
+            col="white", size=12, lineheight = 0.3) +
+  scale_fill_continuous(limits = limits, oob = squish)
+```
+
+Из-за того, что импульсные отклики имеют достаточно широкие достоверные интервалы, с формальной точки зрения гипотеза о значимости различий между регионами не была бы отвергнута для большинства попарных сравнений. Это вызвано, в первую очередь, достаточно коротким интервалом оценки модели, её высокой параметризацией и, в некоторых случаях, невысоким качеством исходных статистических данных. На аналогичный результат указывают @napalkovRazlichiyaEffektahEdinoy2021, отмечая, что анализ возможных источников наблюдаемой гетерогенности в любом случае представляет интерес. Руководствуясь этой логикой, в этом разделе мы проверяем связь отклика региональных переменных с характеристиками этих регионов.
+
+Теоретическая литература предсказывает, что ключевой фактор, определяющий величину возникающих эффектов - география торговых и производственных связей между регионами. Чем интенсивнее регион торгует с соседями, тем ниже окажется фискальный мультипликатор и сильнее величина спилловер-эффектов [@duporRegionalConsumptionResponses2023]. Формализуя эту идею в пространственной модели общего равновесия, Норрис предсказывает, что наибольшим эффектом на ВВП страны будут обладать расходы, концентрирующиеся в регионах с дефицитом торгового баланса по отношению к другим регионам [@norrisFiscalMultipliersIntegrated2019]. Бернандини и соавторы показывают эмпирически, что перераспределение фиксированного объема госрасходов в пространстве в пользу таких регионов имеет стимулирующий эффект [@bernardiniHeterogeneousGovernmentSpending2020].
+
+DSGE-модели открытой экономики, в которых два региона составляют федерацию, демонстрируют, что величина спилловер-эффектов также может зависеть от способа финансирования расходов: дефицит местного бюджета или трансфер из федерального бюджета, финансируемый пропорционально всеми членами союза [@nakamuraFiscalStimulusMonetary2014;@chodorow-reichGeographicCrossSectionalFiscal2019;@duporRegionalConsumptionResponses2023]. Среди других факторов, влияющих на величину фискального мультипликатора, выделяют композицию госрасходов и их распределение между трудо- и капиталоёмкими отраслями [@juarrosHeterogeneousSpendingHeterogeneous2023], уровень внутри- и межрегионального неравенства и остроты ограничений на заимствование [@bernardiniHeterogeneousGovernmentSpending2020;@debuque-gonzalesLocalFiscalMultipliers2021], а также степень жёсткости цен и заработных плат [@carvalhoLocalFinanceJob2023]. 
+
+Исходя из этих соображений и доступности данных на региональном уровне, в качестве потенциальных факторов гетерогенности выделяются^[Если не указано иное, используются средние за период 2017 - 2023 гг.]:
+
+1. Размер и структура экономики: реальный ВРП на душу населения, доля добывающей, обрабатывающей промышленности и строительства в ВРП
+1. Распределение доходов: децильный коэффициент и доля населения с доходами ниже границы бедности
+1. Региональный рынок труда: уровень безработицы, число безработных на одну вакансию, доля занятых в организациях с негосударственной формой собственности, доля занятых на малых и средних предприятиях^[Среднее за 2019 - 2023 гг.]
+1. Внешнеторговые связи: доля импорта из-за рубежа в ВРП, отношение отгрузки продукции из других регионов России и в другие регионы России к отгрузке в регион^[По данным о межрегиональной торговле за 2016 г.]
+1. Региональный бюджет: уровень регионального долга к ВРП (за исключением бюджетных кредитов), доля расходов регионального бюджета на нацоборону, безопасность, нацэкономику и социальную сферу
+
+В качестве зависимой переменной используется отклик выпуска, уровня цен, а также средняя величина spill-out и spill-in эффекта для региона на горизонте 3 месяцев. При оценке модели наблюдения взвешиваются по среднему подушевому ВРП регионов.
+
+```{r Yregress, tab.cap = 'Факторы гетерогенности отклика выпуска на шок госрасходов', tab.id = "Yregress"}
+hor <- 3
+modelData <- horizonY %>%
+  filter(h == hor) %>%
+  rename(y = value) %>%
+  select(-c(sig68,grp)) %>%
+  left_join(horizonPi %>% select(OKATO_id, pi = value, h) %>% filter(h == hor), by = c('OKATO_id', 'h')) %>%
+  left_join(explanatory %>% select(-c(OKATO,sport,state,culture,utilities)))
+# GRP and Structure
+m1 <- lm(y ~ log(GRP) + extraction + industry + construction, modelData,
+             weight = GRP)
+m1r <- coeftest(m1, vcov = vcovHAC, save = TRUE)
+# Liquidity constraints
+m2 <- lm(y ~ decile_coeff + poverty, modelData,
+             weight = GRP)
+m2r <- coeftest(m2, vcov = vcovHAC, save = TRUE)
+# Labour market
+m3 <- lm(y ~ tightness + unemprate + private_empl_share + sme_empl_share, modelData,
+             weight = GRP)
+m3r <- coeftest(m3, vcov = vcovHAC, save = TRUE)
+# Trade
+m4 <- lm(y ~ imgrp + exsh + imsh, modelData,
+             weight = GRP)
+m4r <- coeftest(m4, vcov = vcovHAC, save = TRUE)
+# Budget
+m5 <- lm(y ~ defense + security + economy + social + debtgrp, modelData,
+             weight = GRP)
+m5r <- coeftest(m5, vcov = vcovHAC, save = TRUE)
+# Table
+ts <- officer::fp_tabs(
+  officer::fp_tab(pos = .4, style = "decimal"),
+  officer::fp_tab(pos = 1.2, style = "decimal")
+)
+tab <- huxreg("ВРП" = m1, "Неравенство" = m2, "Рынок труда" = m3, "Внешняя торговля" = m4, "Бюджет" = m5, number_format = 2, statistics = c("N" = "nobs", 
+      "R^2" = "r.squared", "R^2 adj." = "adj.r.squared", "F statistic" = "statistic",
+      "P value" = "p.value"), bold_signif = 0.1, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01),
+      coefs = c("Константа" = "(Intercept)"
+                ,"Логарифм ВРП на душу" = "log(GRP)",
+                "Доля добычи в ВРП" = "extraction",
+                "Доля обработки в ВРП" = "industry",
+                "Доля строительства в ВРП" = "construction",
+                "Децильный коэффициент" = "decile_coeff",
+                "Уровень бедности" = "poverty",
+                "Доля занятости в частном секторе" = "private_empl_share",
+                "Доля занятости на МСП" = "sme_empl_share",
+                "Жёсткость рынка труда" = "tightness",
+                "Безработица" = "unemprate",
+                "Импорт/ВРП" = "imgrp",
+                "Отгрузка товаров из других регионов" = "imsh",
+                "Отгрузка товаров в другие регионы" = "exsh",
+                "Расходы на нацоборону" = "defense",
+                "Расходы на нацбезопасность" = "security",
+                "Социальные расходы" = "social",
+                "Расходы на нацэкономику" = "economy",
+                "Госдолг к ВРП" = "debtgrp"
+                )) %>%
+  set_align(., '.')
+tab <- tab[-seq(3,39,2),]
+tab %>%
+  as_flextable() %>%
+  flextable::align(align = 'left', part = 'all') %>%
+  prepend_chunks(j = 2:5, as_chunk("\t")) %>%
+  tab_settings(j = 2:5, value = ts) %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+Из-за ограниченного числа наблюдений анализ проводится по отдельным блокам переменных. Результаты приведены в Таблице \@ref(tab:Yregress). 
+
+Мультипликатор выпуска оказывается выше в более богатых регионах в расчёте на душу населения. Кроме того, его величина положительно связана с долей строительной отрасли в ВРП. Это может объясняться дополнительным спросом, который предъявляет строительная отрасль на продукцию других отраслей, что увеличивает мультипликативный эффект. Мультипликатор оказывается тем выше, чем выше уровень внутрирегионального неравенства. Более выраженная дифференциация жителей региона по доходам может приводить к существенным различиям в склонности к потреблению, что увеличивает силу индуцированных эффектов фискальной политики. Аналогичный эффект может ожидаться и по отношению к фирмам: малые предприятия гораздо чаще сталкиваются с ограничениями ликвидности, и должны активнее реагировать на положительные фискальные шоки из-за балансовых эффектов [@espinozaFiscalMultiplierPublic2024,@juarrosFiscalStimulusCredit2022]. Результаты анализа, однако, свидетельствуют об обратном: в регионах с высокой долей занятости на малых и средних предприятиях мультипликатор оказывается ниже. Это свидетельствует о том, что "кредитный канал" фискальной политики влияет скорее на крупные предприятия, в то время как острота кредитных ограничений для МСП не зависит от мер фискальной политики. Наконец, регионы с большей долей расходов на нацэкономику в бюджете имеют более высокий мультипликатор, что подтверждает выводы предыдущих исследований о более высокой эффективности производительных бюджетных расходов.
+
+Отклик регионального уровня цен в среднем тем слабее, чем сильнее реагирует выпуск (см. график и таблицы регрессий в Приложении 4). Это может являться косвенным свидетельством межрегиональных различий в уровне жёсткости цен. Инфляционные последствия шоков госрасходов более выражены в менее богатых регионах с низким уровнем регионального неравенства, с высокой долей занятости в госсекторе и на МСП, а также высоким уровнем государственного долга. Регионы, тратящие большую долю бюджета на нацэкономику, напротив, сталкиваются с меньшим ростом уровня цен, что подтверждает влияние фискальной политики на сторону предложения.
+
+Как было показано выше, величина спилловер эффектов в целом невысока, что объясняется относительно небольшим размером региональных экономик. Наиболее сильно на другие регионы влияют бюджетные расходы в Москве и Московской области, Санкт-Петербурге и Тюменской области из-за их размера и тесных экономических связей с другими регионами. Формальный анализ факторов гетерогенности подтверждает эту гипотезу (см. Приложение 4): величина spill-out эффектов пропорциональна уровню подушевого ВРП региона, а влияние большинства факторов совпадает по знаку с их влиянием на фискальный мультипликатор в регионе. Помимо упомянутых выше переменных, значимой становится жёсткость регионального рынка труда и его внешнеторговые связи: чем выше в регионе избыточный спрос на труд и доля импорта в ВРП, тем сильнее шок госрасходов скажется на его соседях. Чем больше экспорт региона в другие регионы России, тем слабее оказываются спилловер-эффекты. Наибольшей чувствительностью к бюджетным расходам в регионах-соседях обладают регионы с более высокой долей обрабатывающей промышленности, меньшим уровнем неравенства по доходам и менее жёстким рынком труда. 
+
+# Заключение
+
+Проведённое исследование демонстрирует, что фискальная политика оказывает неоднородное влияние на экономику российских регионов. Использование GVAR-модели позволило оценить не только локальные фискальные мультипликаторы, но и межрегиональные спилловер-эффекты. Результаты подтверждают, что бюджетные стимулы могут как напрямую повышать выпуск в целевом регионе, так и оказывать воздействие на соседние регионы. Величина этих эффектов определяется не только размерами экономики, но и отраслевой структурой выпуска, уровнем неравенства, а также параметрами рынка труда и внешнеторговыми связями.
+
+Выявлено, что фискальная политика оказывается более эффективной в регионах с высоким уровнем ВРП на душу населения. В таких регионах бюджетные стимулы приводят к более выраженному росту выпуска, что может быть связано с более глубоким внутренним рынком, преобладанием сферы услуг и более высокой долей крупных предприятий, способных быстрее реагировать на изменения в спросе. Вместе с тем, экономически развитые регионы обладают устойчивой большой налоговой базой, что расширяет доступное им фискальное пространство и позволяет проводить более активную фискальную политику. Полученные результаты свидетельствуют о том, что это может усиливать межрегиональное неравенство и требует проведения активной перераспределительной политики на федеральном уровне.
+
+Значительная вариативность реакции выпуска и уровня цен на фискальные шоки, а также их зависимость от состояния локального рынка труда, может указывать также на отличия в степени номинальных жёсткостей между регионами России. Кроме того, в работе зафиксировано, что во многих регионах шоки госрасходов являются дезинфляционными, то есть имеют выраженные положительные эффекты на стороне предложения. Это необходимо принимать во внимание как при планировании фискальных мер, так и в проведении единой денежно-кредитной политики. 
+
+Таким образом, результаты исследования подтверждают сложную природу фискальной трансмиссии в экономике с большой региональной дифференциацией. Полученные результаты обосновывают необходимость дальнейшего изучения влияния фискальной политики с использованием гранулярных данных на уровне регионов, фирм или отдельных домохозяйств.
+
+
+# Список использованной литературы
+
+<div id="refs"></div>
+
+# Приложение 1. Источники данных и построение показателей
+
+## Глобальные переменные и межрегиональная торговля
+
+Данные о среднемесячном курсе рубля к доллару получены из ЕМИСС^[<https://fedstat.ru/indicator/42108>]. В качестве индикатора денежно-кредитной политики выбрана ставка RUONIA, являющаяся индикатором достижения Банком России своей операционной цели^[<https://www.cbr.ru/hd_base/ruonia/dynamics>]. Ежедневные значения ставки усредняются до ежемесячного уровня арифметическим средним. В качестве индикатора внешних условий используется среднемесячная цена на нефть марки Urals, рассчитанная Департаментом развития и регулирования внешнеэкономической деятельности Минэкономразвития России^[<https://www.economy.gov.ru/material/departments/d12/konyunktura_mirovyh_tovarnyh_rynkov>].
+
+Статистика торговли между регионами России по данным Росстата получена из Единого архива экономических и социологических данных ВШЭ^[<http://sophist.hse.ru/rstat_data/vvoz2016/pBBF2_2016/pВВФ2_99.xls>]. Набор данных датируется 2016 годом. Статистика по ввозу-вывозу товаров продолжает публиковаться Росстатом и сейчас, однако в наборах данных за более поздние годы доступна информация только по торговле отдельными товарами. Существенная часть информации в разрезе отдельных товаров скрыта из-за ограничений, необходимых для сохранения конфиденциальности первичной статистической информации. По этой причине суммирование таких данных по отдельным товарам не представляется возможным. Получить агрегированные данные (сумму по всем товарам) во взаимодействии с Росстатом автору не удалось.
+
+Для расчёта весов $w_{ij}$ из исходных данных исключаются товарные потоки, направленные на экспорт за пределы России, а также потоки, классифицированные Росстатом как "нераспределенные". Затем для каждой пары регионов конструируется двусторонний объём торговли (сумма экспорта и импота). Получившаяся симметричная матрица нормируется так, чтобы сумма весов по столбцам была равна 1.  
+
+## Бюджетная статистика 
+
+Данные о расходах и доходах федерального бюджета получены с сайта Министерства Финансов России^[<https://minfin.gov.ru/ru/statistics/fedbud>]. Для приведения к показателю в реальном выражении исходный ряд дефлирован с помощью общероссийского индекса потребительских цен (100 = среднее значение 2016 г.), сконструированного по данным Росстата^[<https://fedstat.ru/indicator/31074>].
+
+Данные о расходах региональных бюджетов за период с января 2009 г. по февраль 2022 г. получены из отчётов Федерального Казначейства^[<https://www.roskazna.gov.ru/ispolnenie-byudzhetov/konsolidirovannye-byudzhety-subektov/1019/>], а с марта 2022 г. - из системы "Электронный бюджет"^[<https://budget.gov.ru/Бюджет/Расходы>]. В качестве показателя расходов выбрана строка "Расходы бюджета - всего" (код 960000). Показатели в реальном выражении получены путём дефлирования с помощью индекса потребительских цен для соответствующего субъекта. 
+
+В распоряжении автора имеется более широкий набор данных о расходах и доходах (в разбивке по отдельным статьям) региональных бюджетов на месячном уровне с 2001 года, доступный по запросу.
+
+## Региональная экономика
+
+Ежемесячные показатели экономической динамики на региональном уровне рассчитаны на основе данных из приложения "Некоторые статистические показатели социально-экономического положения субъектов Российской Федерации" к публикациям Росстата "Социально-экономическое положение России" (СЭПР)^[<https://rosstat.gov.ru/compendium/document/50801>], уточнённых данных "Мониторинга социально-экономического положения субъектов Российской Федерации" (СЭПС)^[<https://rosstat.gov.ru/folder/11109/document/13259>], а также информации из ЕМИСС^[<https://fedstat.ru>].
+
+
+В настоящем исследовании используются следующие ряды:
+
+1. Индекс физического объёма розничной торговли (источник: расчёт на основе данных СЭПР и СЭПС)
+2. Индекс физического объёма платных услуг населению (источник: расчёт на основе данных СЭПР и СЭПС)
+3. Индекс промышленного производства (источник: расчёт на основе данных ЕМИСС, СЭПР и СЭПС)
+4. Индекс физического объёма работ по виду деятельности "Строительство" (источник: расчёт на основе данных СЭПР и СЭПС)
+5. Индекс потребительских цен (источник: расчёт на основе данных ЕМИСС)
+<!-- 5. Уровень безработицы, рассчитанный как отношение численности безработных к рабочей силе (источник: расчёт на основе данных ЕМИСС) -->
+<!-- 6. Реальная заработная плата, полученная как частное от деления номинальной заработной платы и индекса потребительских цен (источник: расчёт на основе данных ЕМИСС, СЭПР и СЭПС) -->
+
+В распоряжении автора имеется более широкий набор данных об этих и иных индикаторах экономической активности в регионах России на месячном уровне с середины 2000-х гг., полученный аналогичным образом и доступный по запросу.
+
+В российской статистической традиции индексы, отражающие динамику показателей, публикуются трёх видах: период к предыдущему периоду (м/м), период к аналогичному периоду предыдущего года (г/г), период к аналогичному периоду предыдущего года накопленным итогом. При этом индекс в базисной форме чаще всего не рассчитывается и не публикуется. В целях настоящей работы индексы в базисной форме (100 = среднее значение 2016 года) для показателей (1)-(3) получены расчётным методом.
+
+В общем случае получение индекса в базисной форме из цепных приростов м/м возможно путем последовательного перемножения цепных значений:
+
+\begin{align}
+    I^B_t  = I_{t_0} \cdot \prod_{i = t_{0} + 1}^{t} I_i^{MoM} (\#eq:eq1)
+\end{align}
+
+где $I_i^{MoM} = x_t/x_{t-1}$ - значение цепного индекса (м/м), $I^B_t$ - значение базисного индекса. 
+
+Методология Росстата по расчёту большинства индексов предполагает регулярный пересмотр данных. В публикациях сборника СЭПР информация о пересмотрах ранее опубликованных данных не приводится. В мониторинге СЭПС Росстат приводит соответствующие ряды с учётом уточнений и корректировок. При этом мониторинг СЭПС содержит меньший набор показателей, зачастую не включает цепные индексы (м/м), а также ограничивается периодом с начала 2009 года. В условиях, когда доступ к наиболее актуальному винтажу данных отсутствует, применение формулы \@ref(eq:eq1) не является корректным. 
+
+Для решения этой проблемы используется следующий подход:
+
+1.  Для каждого из показателей собираются опубликованные в сборниках СЭПР и мониторинге СЭПС значения темпов роста м/м и г/г (при наличии)
+2. К первым двенадцати значениям индексов м/м применяется формула \@ref(eq:eq1), где значение $I_{t_0}$ принимается за $100$. Результатом этой операции являются первые двенадцать значений базисного индекса
+3. Последующие значения базисного индекса рассчитываются с применением следующей формулы:
+\begin{align}
+    I^B_t  = I^B_{t-12} \cdot I_t^{YoY} \label{eq2}, t \geq 13
+\end{align}
+где $I_t^{YoY} = x_t/x_{t-12}$ - значение индекса г/г
+4. Полученные базисный индекс нормируется на среднемесячное значение 2016 года:
+\begin{align}
+    \hat{I}^B_t  = \frac{I^B_t}{\frac{1}{12} \sum_{k=\text{1M2016}}^{k=\text{12M2016}} I^B_k}
+\end{align}
+
+Описанный алгоритм позволяет получить базисные индексы существенно более высокого качества: они содержат меньше экстремальных значений, более чёткую сезонную волну, а также не приводят к искажению динамики показателя.
+
+Полученные индексы взвешиваются по долям соответствующих отраслей в ВРП для получения регионального индикатора экономической активности (прокси-ВРП). Доли соответствующих видов деятельности рассчитаны по данным о структуре ВРП^[<https://rosstat.gov.ru/statistics/accounts>] следующим образом:
+
+1. Промышленность: разделы B ("Добыча полезных ископаемых"), C ("Обрабатывающие производства"), D ("Обеспечение электрической энергией, газом и паром; кондиционирование воздуха"), E ("Водоснабжение; водоотведение, организация сбора и утилизация отходов, деятельность по ликвидации загрязнений")
+2. Строительство: раздел F ("Строительство")
+3. Розничная торговля: раздел G ("Торговля оптовая и розничная; ремонт автотранспортных средств и мотоциклов")
+4. Платные услуги: разделы L ("Деятельность по операциям с недвижимым имуществом"), M ("Деятельность профессиональная, научная и техническая"), R ("Деятельность в области культуры, спорта, организации досуга и развлечений"), S ("Предоставление прочих видов услуг")
+
+# Приложение 2. Фискальные мультипликаторы в регионах России
+
+```{r OwnYReg, tab.cap = 'Мультипликатор выпуска, шок расходов 1% ВРП', tab.id = "OwnYReg"}
+horizonY %>%
+  filter(h %in% c(0,6,12)) %>%
+  mutate(value = paste0(sprintf("%.2f", round(value,2)), ifelse(sig68, '*', ''))) %>%
+  select(-c(sig68, grp)) %>%
+  pivot_wider(names_from = 'h', values_from = 'value') %>%
+  rename_with(~c('OKATO', 'Регион', '0', '6', '12')) %>%
+  left_join(peakY) %>%
+  flextable() %>%
+  autofit() %>%
+  flextable::align(align = "center", part = "all") %>%
+  add_header_row(values = c(" ", "Горизонт (месяцев)", "Пиковый эффект"), colwidths = c(2,3,2)) %>%
+  add_header_row(values = c(" ", "Отклик выпуска"), colwidths = c(2,5)) %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+```{r OwnYDynReg, fig.cap='Региональные отклики выпуска на шок расходов бюджета', fig.width=7}
+multY %>%
+  ggplot() +
+  geom_line(aes(x=h, y=value, group = OKATO_id, colour = OKATO_id), linewidth = 0.5, linetype = 'dotted') +
+  geom_line(data = tableY %>%
+              filter(type == 'Weighted Mean') %>%
+              pivot_longer(-type) %>%
+              mutate(name = as.factor(name)),
+            aes(x=name, y=value, group = 2, colour = 'Взвешенное среднее'), linewidth = 1) +
+  scale_colour_manual(values = c(scales::seq_gradient_pal("black", "grey", "Lab")(seq(0,1,length.out=79)), 'black'), breaks = "Взвешенное среднее") +
+  # guides(colour=guide_legend(ncol=2)) +
+  theme_hse() +
+  labs(x = 'Горизонт, месяцев',
+       y = '%',
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+
+
+```{r OwnPiReg, tab.cap = 'Мультипликатор инфляции, шок расходов 1% ВРП', tab.id = "OwnPiReg"}
+horizonPi %>%
+  filter(h %in% c(0,6,12)) %>%
+  mutate(value = paste0(sprintf("%.2f", round(value,2)), ifelse(sig68, '*', ''))) %>%
+  select(-c(sig68, grp)) %>%
+  pivot_wider(names_from = 'h', values_from = 'value') %>%
+  rename_with(~c('OKATO', 'Регион', '0', '6', '12')) %>%
+  left_join(peakPi) %>%
+  flextable() %>%
+  autofit() %>%
+  flextable::align(align = "center", part = "all") %>%
+  add_header_row(values = c(" ", "Горизонт (месяцев)", "Пиковый эффект"), colwidths = c(2,3,2)) %>%
+  add_header_row(values = c(" ", "Отклик инфляции"), colwidths = c(2,5)) %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+```{r OwnPiDynReg, fig.cap='Региональные отклики уровня цен на шок расходов бюджета', fig.width=7}
+multPi %>%
+  ggplot() +
+  geom_line(aes(x=h, y=value, group = OKATO_id, colour = OKATO_id), linewidth = 0.5, linetype = 'dotted') +
+  geom_line(data = tablePi %>%
+              filter(type == 'Weighted Mean') %>%
+              pivot_longer(-type) %>%
+              mutate(name = as.factor(name)),
+            aes(x=name, y=value, group = 2, colour = 'Взвешенное среднее'), linewidth = 1) +
+  scale_colour_manual(values = c(scales::seq_gradient_pal("black", "grey", "Lab")(seq(0,1,length.out=79)), 'black'), breaks = "Взвешенное среднее") +
+  # guides(colour=guide_legend(ncol=2)) +
+  theme_hse() +
+  labs(x = 'Горизонт, месяцев',
+       y = '%',
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+
+```{r OwnPiMap, fig.cap='Мультипликатор уровня цен на горизонте 12 месяцев', fig.width=7, dpi=400}
+limits <- multPi %>%
+  filter(h == 12) %>%
+  pull(value) %>%
+  quantile(GRADIENT_QUANTILE_LIMITS)
+multPi %>% 
+  filter(h == 12) %>%
+  ggplot() +
+  geom_rect_pattern(mapping=aes(xmin=1, xmax=2, ymin=1, ymax=2, fill=value,
+                                pattern_alpha = !sig68,
+                                alpha = !sig68),
+                    color=NA) +
+  facet_geo(~ OKATO_id, grid = grid) +
+  scale_alpha_manual(values = c('TRUE' = SIG_OPACITY, 'FALSE' = 1)) + 
+  scale_pattern_alpha_manual(values = c('TRUE' = SIG_OPACITY, 'FALSE' = 0)) + 
+  labs(x='', y='', caption = 'Значимые отклики обозначены цветом') +
+  theme(legend.position = 'none',
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.caption = element_text(size = 20),
+        strip.placement = "bottom",
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        line = element_blank(),
+        panel.spacing = unit(-2, "points")
+  ) +
+  # Тонкая настройка подписей: <краткое название субъекта> <+/-> <значение>%
+  geom_text(aes(x = 1.5, y = 1.5, label = paste0(name,'\n', round(value,2), '%')),
+            col="white", size=12, lineheight = 0.3) +
+  scale_fill_continuous(limits = limits, oob = squish)
+```
+
+
+# Приложение 3. Спилловер-эффекты региональных бюджетных шоков
+
+```{r YSpill, tab.cap = 'Спилловер-эффекты на динамику выпуска', tab.id = "YSpill"}
+tableregionspillY %>%
+  select(-c('3','SP3')) %>%
+  flextable() %>%
+  autofit() %>%
+  flextable::align(align = "center", part = "all") %>%
+  labelizor(part = "header", labels = c("OKATO_id" = "OKATO", "OKATO" = "Регион", "SP0" = "0", "SP6" = "6", "SP12" = "12")) %>%
+  add_header_row(values = c(" ", "Spill-out эффект", "Spill-in эффект"), colwidths = c(2,3,3)) %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+```{r PiSpill, tab.cap = 'Спилловер-эффекты на динамику инфляции', tab.id = "PiSpill"}
+tableregionspillPi %>%
+  flextable() %>%
+  autofit() %>%
+  flextable::align(align = "center", part = "all") %>%
+  labelizor(part = "header", labels = c("OKATO_id" = "OKATO", "OKATO" = "Регион", "SP0" = "0", "SP6" = "6", "SP12" = "12")) %>%
+  add_header_row(values = c(" ", "Spill-out эффект", "Spill-in эффект"), colwidths = c(2,3,3)) %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+# Приложение 4. Факторы гетерогенности отклика инфляции и спилловер-эффектов
+
+```{r PiYCorr, tab.cap = 'Факторы гетерогенности отклика выпуска на шок госрасходов', tab.id = "PiYCorr"}
+hor <- 3
+modelData <- horizonY %>%
+  filter(h == hor) %>%
+  rename(y = value) %>%
+  select(-c(sig68,grp)) %>%
+  left_join(horizonPi %>% select(OKATO_id, pi = value, h) %>% filter(h == hor), by = c('OKATO_id', 'h')) %>%
+  left_join(explanatory %>% select(-c(OKATO,sport,state,culture,utilities)))
+modelData %>%
+  ggplot(aes(x=y,y=pi)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  theme_hse() +
+  labs(x = 'Отклик выпуска, %',
+       y = 'Отклик уровня цен, %',
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, angle = 90),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+
+```{r Piregress, tab.cap = 'Факторы гетерогенности отклика инфляции на шок госрасходов', tab.id = "Piregress"}
+hor <- 3
+modelData <- horizonY %>%
+  filter(h == hor) %>%
+  rename(y = value) %>%
+  select(-c(sig68,grp)) %>%
+  left_join(horizonPi %>% select(OKATO_id, pi = value, h) %>% filter(h == hor), by = c('OKATO_id', 'h')) %>%
+  left_join(explanatory %>% select(-c(OKATO,sport,state,culture,utilities)))
+# GRP and Structure
+m1 <- lm(pi ~ log(GRP) + extraction + industry + construction, modelData,
+             weight = GRP)
+m1r <- coeftest(m1, vcov = vcovHAC, save = TRUE)
+# Liquidity constraints
+m2 <- lm(pi ~ decile_coeff + poverty, modelData,
+             weight = GRP)
+m2r <- coeftest(m2, vcov = vcovHAC, save = TRUE)
+# Labour market
+m3 <- lm(pi ~ tightness + unemprate + private_empl_share + sme_empl_share, modelData,
+             weight = GRP)
+m3r <- coeftest(m3, vcov = vcovHAC, save = TRUE)
+# Trade
+m4 <- lm(pi ~ imgrp + exsh + imsh, modelData,
+             weight = GRP)
+m4r <- coeftest(m4, vcov = vcovHAC, save = TRUE)
+# Budget
+m5 <- lm(pi ~ defense + security + economy + social + debtgrp, modelData,
+             weight = GRP)
+m5r <- coeftest(m5, vcov = vcovHAC, save = TRUE)
+# Table
+ts <- officer::fp_tabs(
+  officer::fp_tab(pos = .4, style = "decimal"),
+  officer::fp_tab(pos = 1.2, style = "decimal")
+)
+tab <- huxreg("ВРП" = m1, "Неравенство" = m2, "Рынок труда" = m3, "Внешняя торговля" = m4, "Бюджет" = m5, number_format = 2, statistics = c("N" = "nobs", 
+      "R^2" = "r.squared", "R^2 adj." = "adj.r.squared", "F statistic" = "statistic",
+      "P value" = "p.value"), bold_signif = 0.1, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01),
+      coefs = c("Константа" = "(Intercept)"
+                ,"Логарифм ВРП на душу" = "log(GRP)",
+                "Доля добычи в ВРП" = "extraction",
+                "Доля обработки в ВРП" = "industry",
+                "Доля строительства в ВРП" = "construction",
+                "Децильный коэффициент" = "decile_coeff",
+                "Уровень бедности" = "poverty",
+                "Доля занятости в частном секторе" = "private_empl_share",
+                "Доля занятости на МСП" = "sme_empl_share",
+                "Жёсткость рынка труда" = "tightness",
+                "Безработица" = "unemprate",
+                "Импорт/ВРП" = "imgrp",
+                "Отгрузка товаров из других регионов" = "imsh",
+                "Отгрузка товаров в другие регионы" = "exsh",
+                "Расходы на нацоборону" = "defense",
+                "Расходы на нацбезопасность" = "security",
+                "Социальные расходы" = "social",
+                "Расходы на нацэкономику" = "economy",
+                "Госдолг к ВРП" = "debtgrp"
+                )) %>%
+  set_align(., '.')
+tab <- tab[-seq(3,39,2),]
+tab %>%
+  as_flextable() %>%
+  flextable::align(align = 'left', part = 'all') %>%
+  prepend_chunks(j = 2:5, as_chunk("\t")) %>%
+  tab_settings(j = 2:5, value = ts) %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+```{r SpillOutRegress, tab.cap = 'Факторы гетерогенности spill-out эффектов', tab.id = "SpillOutRegress"}
+modelData <- tableregionspillY %>%
+  select(OKATO, OKATO_id, y = `0`) %>%
+  left_join(explanatory %>% select(-c(OKATO,sport,state,culture,utilities)))
+# GRP and Structure
+m1 <- lm(y ~ log(GRP) + extraction + industry + construction, modelData,
+             weight = GRP)
+m1r <- coeftest(m1, vcov = vcovHAC, save = TRUE)
+# Liquidity constraints
+m2 <- lm(y ~ decile_coeff + poverty, modelData,
+             weight = GRP)
+m2r <- coeftest(m2, vcov = vcovHAC, save = TRUE)
+# Labour market
+m3 <- lm(y ~ tightness + unemprate + private_empl_share + sme_empl_share, modelData,
+             weight = GRP)
+m3r <- coeftest(m3, vcov = vcovHAC, save = TRUE)
+# Trade
+m4 <- lm(y ~ imgrp + exsh + imsh, modelData,
+             weight = GRP)
+m4r <- coeftest(m4, vcov = vcovHAC, save = TRUE)
+# Budget
+m5 <- lm(y ~ defense + security + economy + social + debtgrp, modelData,
+             weight = GRP)
+m5r <- coeftest(m5, vcov = vcovHAC, save = TRUE)
+# Table
+ts <- officer::fp_tabs(
+  officer::fp_tab(pos = .4, style = "decimal"),
+  officer::fp_tab(pos = 1.2, style = "decimal")
+)
+tab <- huxreg("ВРП" = m1, "Неравенство" = m2, "Рынок труда" = m3, "Внешняя торговля" = m4, "Бюджет" = m5, number_format = 2, statistics = c("N" = "nobs", 
+      "R^2" = "r.squared", "R^2 adj." = "adj.r.squared", "F statistic" = "statistic",
+      "P value" = "p.value"), bold_signif = 0.1, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01),
+      coefs = c("Константа" = "(Intercept)"
+                ,"Логарифм ВРП на душу" = "log(GRP)",
+                "Доля добычи в ВРП" = "extraction",
+                "Доля обработки в ВРП" = "industry",
+                "Доля строительства в ВРП" = "construction",
+                "Децильный коэффициент" = "decile_coeff",
+                "Уровень бедности" = "poverty",
+                "Доля занятости в частном секторе" = "private_empl_share",
+                "Доля занятости на МСП" = "sme_empl_share",
+                "Жёсткость рынка труда" = "tightness",
+                "Безработица" = "unemprate",
+                "Импорт/ВРП" = "imgrp",
+                "Отгрузка товаров из других регионов" = "imsh",
+                "Отгрузка товаров в другие регионы" = "exsh",
+                "Расходы на нацоборону" = "defense",
+                "Расходы на нацбезопасность" = "security",
+                "Социальные расходы" = "social",
+                "Расходы на нацэкономику" = "economy",
+                "Госдолг к ВРП" = "debtgrp"
+                )) %>%
+  set_align(., '.')
+tab <- tab[-seq(3,39,2),]
+tab %>%
+  as_flextable() %>%
+  flextable::align(align = 'left', part = 'all') %>%
+  prepend_chunks(j = 2:5, as_chunk("\t")) %>%
+  tab_settings(j = 2:5, value = ts) %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```
+
+```{r SpillInRegress, tab.cap = 'Факторы гетерогенности spill-in эффектов', tab.id = "SpillInRegress"}
+modelData <- tableregionspillY %>%
+  select(OKATO, OKATO_id, y = SP0) %>%
+  left_join(explanatory %>% select(-c(OKATO,sport,state,culture,utilities)))
+# GRP and Structure
+m1 <- lm(y ~ log(GRP) + extraction + industry + construction, modelData,
+             weight = GRP)
+m1r <- coeftest(m1, vcov = vcovHAC, save = TRUE)
+# Liquidity constraints
+m2 <- lm(y ~ decile_coeff + poverty, modelData,
+             weight = GRP)
+m2r <- coeftest(m2, vcov = vcovHAC, save = TRUE)
+# Labour market
+m3 <- lm(y ~ tightness + unemprate + private_empl_share + sme_empl_share, modelData,
+             weight = GRP)
+m3r <- coeftest(m3, vcov = vcovHAC, save = TRUE)
+# Trade
+m4 <- lm(y ~ imgrp + exsh + imsh, modelData,
+             weight = GRP)
+m4r <- coeftest(m4, vcov = vcovHAC, save = TRUE)
+# Budget
+m5 <- lm(y ~ defense + security + economy + social + debtgrp, modelData,
+             weight = GRP)
+m5r <- coeftest(m5, vcov = vcovHAC, save = TRUE)
+# Table
+ts <- officer::fp_tabs(
+  officer::fp_tab(pos = .4, style = "decimal"),
+  officer::fp_tab(pos = 1.2, style = "decimal")
+)
+tab <- huxreg("ВРП" = m1, "Неравенство" = m2, "Рынок труда" = m3, "Внешняя торговля" = m4, "Бюджет" = m5, number_format = 2, statistics = c("N" = "nobs", 
+      "R^2" = "r.squared", "R^2 adj." = "adj.r.squared", "F statistic" = "statistic",
+      "P value" = "p.value"), bold_signif = 0.1, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01),
+      coefs = c("Константа" = "(Intercept)"
+                ,"Логарифм ВРП на душу" = "log(GRP)",
+                "Доля добычи в ВРП" = "extraction",
+                "Доля обработки в ВРП" = "industry",
+                "Доля строительства в ВРП" = "construction",
+                "Децильный коэффициент" = "decile_coeff",
+                "Уровень бедности" = "poverty",
+                "Доля занятости в частном секторе" = "private_empl_share",
+                "Доля занятости на МСП" = "sme_empl_share",
+                "Жёсткость рынка труда" = "tightness",
+                "Безработица" = "unemprate",
+                "Импорт/ВРП" = "imgrp",
+                "Отгрузка товаров из других регионов" = "imsh",
+                "Отгрузка товаров в другие регионы" = "exsh",
+                "Расходы на нацоборону" = "defense",
+                "Расходы на нацбезопасность" = "security",
+                "Социальные расходы" = "social",
+                "Расходы на нацэкономику" = "economy",
+                "Госдолг к ВРП" = "debtgrp"
+                )) %>%
+  set_align(., '.')
+tab <- tab[-seq(3,39,2),]
+tab %>%
+  as_flextable() %>%
+  flextable::align(align = 'left', part = 'all') %>%
+  prepend_chunks(j = 2:5, as_chunk("\t")) %>%
+  tab_settings(j = 2:5, value = ts) %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all')
+```

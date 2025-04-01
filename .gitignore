@@ -1,0 +1,9 @@
+Results/*
+!Results/3v1_1p-MN-SV-1000-15000/
+Results/3v1_1p-MN-SV-1000-15000/3v1_1p-MN-SV-1000-15000.RDS
+Results/3v1_1p-MN-SV-1000-15000/regions_chol/*
+Results/3v1_1p-MN-SV-1000-15000/regions_sign/*
+
+.Rproj.user/*
+
+R/.Rproj.user/*

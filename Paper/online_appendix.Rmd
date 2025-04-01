@@ -1,0 +1,460 @@
+---
+title: "Неоднородность влияния бюджетной политики на регионы России^[Контактная информация: Гуленков И. В., igulenkov@hse.ru] ^,^ ^[Исследование осуществлено в рамках Программы фундаментальных исследований НИУ ВШЭ в 2025 г.]"
+author: '**И. В. Гуленков.** Департамент теоретической экономики, Международная лаборатория макроэкономического анализа, Национальный исследовательский университет "Высшая школа экономики", Москва'
+output:  
+  officedown::rdocx_document:
+    base_format: "bookdown::word_document2"
+    reference_docx: "../Technical/template.docx"
+    pandoc_args: [ "--csl", "../Technical/apa-no-ampersand.csl"]
+    global_numbering: true
+    plots:
+      caption:
+        pre: "Рисунок "
+        sep: ". "
+      topcaption: true
+    tables:
+      caption:
+        style: Table Caption
+        pre: "Таблица "
+        sep: ". "
+  # bookdown::html_document2:
+  #   pandoc_args: [ "--csl", "../Technical/apa-no-ampersand.csl"]
+  #   global_numbering: true
+header-includes:
+  - \usepackage{tikz} 
+  - \usepackage[T2A]{fontenc}
+  - \usepackage[main=russian,english]{babel}
+bibliography: ../Literature/RFS.bib
+biblio-style: apalike
+---
+
+\newcommand*\vect[1]{\mathbf{#1}}
+
+```{r Setup, echo = F, include = FALSE}
+opts <- list(template = "../Technical/tikz2pdf-cyr.tex")
+engine <- 'tikz'
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+trace(grDevices:::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+fp <- officer::fp_par(text.align = "justify")
+```
+
+```{r Data, echo = F}
+set.seed(123)
+library(tidyverse)
+library(readxl)
+library(ggtext)
+library(geofacet)
+library(scales)
+library(ggpattern)
+library(ggridges)
+library(ggbreak) 
+library(spatstat)
+library(sandwich)
+library(lmtest)
+library(kableExtra)
+library(ggcorrplot)
+library(cluster)    # clustering algorithms
+library(flextable)
+library(huxtable)
+options(scipen=9999)
+tabForm <- function(x, cap) {
+  x %>%
+  autofit() %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all') %>%
+  padding(padding = 0, part = "all") %>%
+  flextable::align(align = "center", part = "all") %>%
+  flextable::align(align = 'justify', part = 'footer') %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A") %>%
+  flextable::set_caption(cap, align_with_table = F, word_stylename = "Table Caption", fp_p = officer::fp_par(text.align = "justify"))
+}
+figNote <- function(text) {
+  officer::fpar(paste0('Примечание: ', text), fp_p=officer::fp_par(text.align = 'justify', padding.top = 0), fp_t = officer::fp_text_lite(font.size = 11))
+}
+# LOAD STYLING ----
+source("../Technical/hse_theme.R")
+select <- dplyr::select
+hse_colours <- c("#102D69", "#1656A6", "#BFBFBF", "#E61F3D", "#11A0D7", "#FFD746", "#029C63", "#EB681F")
+# LOAD DATA ----
+QUANTILES <- c(0.15, 0.5, 0.85)
+SIG_OPACITY <- 0.75
+GRADIENT_QUANTILE_LIMITS <- c(0.15,0.85)
+source('../R/3. mult.R')
+```
+
+# Приложение 1. Источники данных и построение показателей {-}
+
+## Глобальные переменные и межрегиональная торговля {-}
+
+Данные о среднемесячном курсе рубля к доллару получены из ЕМИСС^[<https://fedstat.ru/indicator/42108>]. В качестве индикатора денежно-кредитной политики выбрана ставка RUONIA, являющаяся индикатором достижения Банком России своей операционной цели^[<https://www.cbr.ru/hd_base/ruonia/dynamics>]. Ежедневные значения ставки усредняются до ежемесячного уровня арифметическим средним. В качестве индикатора внешних условий используется среднемесячная цена на нефть марки Urals, рассчитанная Департаментом развития и регулирования внешнеэкономической деятельности Минэкономразвития России^[<https://www.economy.gov.ru/material/departments/d12/konyunktura_mirovyh_tovarnyh_rynkov>].
+
+Статистика торговли между регионами России по данным Росстата получена из Единого архива экономических и социологических данных ВШЭ^[<http://sophist.hse.ru/rstat_data/vvoz2016/pBBF2_2016/pВВФ2_99.xls>]. Набор данных датируется 2016 годом. Статистика по ввозу-вывозу товаров продолжает публиковаться Росстатом и сейчас, однако в наборах данных за более поздние годы доступна информация только по торговле отдельными товарами. Существенная часть информации в разрезе отдельных товаров скрыта из-за ограничений, необходимых для сохранения конфиденциальности первичной статистической информации. По этой причине суммирование таких данных по отдельным товарам не представляется возможным. Получить агрегированные данные (сумму по всем товарам) во взаимодействии с Росстатом автору не удалось.
+
+Для расчёта весов $w_{ij}$ из исходных данных исключаются товарные потоки, направленные на экспорт за пределы России, а также потоки, классифицированные Росстатом как "нераспределенные". Затем для каждой пары регионов конструируется двусторонний объём торговли (сумма экспорта и импота). Получившаяся симметричная матрица нормируется так, чтобы сумма весов по столбцам была равна 1.  
+
+## Бюджетная статистика {-}
+
+Данные о расходах и доходах федерального бюджета получены с сайта Министерства Финансов России^[<https://minfin.gov.ru/ru/statistics/fedbud>]. Для приведения к показателю в реальном выражении исходный ряд дефлирован с помощью общероссийского индекса потребительских цен (100 = среднее значение 2016 г.), сконструированного по данным Росстата^[<https://fedstat.ru/indicator/31074>].
+
+Данные о расходах региональных бюджетов за период с января 2009 г. по февраль 2022 г. получены из отчётов Федерального Казначейства^[<https://www.roskazna.gov.ru/ispolnenie-byudzhetov/konsolidirovannye-byudzhety-subektov/1019/>], а с марта 2022 г. - из системы "Электронный бюджет"^[<https://budget.gov.ru/Бюджет/Расходы>]. В качестве показателя расходов выбрана строка "Расходы бюджета - всего" (код 960000). Показатели в реальном выражении получены путём дефлирования с помощью индекса потребительских цен для соответствующего субъекта. 
+
+В распоряжении автора имеется более широкий набор данных о расходах и доходах (в разбивке по отдельным статьям) региональных бюджетов на месячном уровне с 2001 года, доступный по запросу.
+
+## Региональная экономика {-}
+
+Ежемесячные показатели экономической динамики на региональном уровне рассчитаны на основе данных из приложения "Некоторые статистические показатели социально-экономического положения субъектов Российской Федерации" к публикациям Росстата "Социально-экономическое положение России" (СЭПР)^[<https://rosstat.gov.ru/compendium/document/50801>], уточнённых данных "Мониторинга социально-экономического положения субъектов Российской Федерации" (СЭПС)^[<https://rosstat.gov.ru/folder/11109/document/13259>], а также информации из ЕМИСС^[<https://fedstat.ru>].
+
+
+В настоящем исследовании используются следующие ряды:
+
+1. Индекс физического объёма розничной торговли (источник: расчёт на основе данных СЭПР и СЭПС)
+2. Индекс физического объёма платных услуг населению (источник: расчёт на основе данных СЭПР и СЭПС)
+3. Индекс промышленного производства (источник: расчёт на основе данных ЕМИСС, СЭПР и СЭПС)
+4. Индекс физического объёма работ по виду деятельности "Строительство" (источник: расчёт на основе данных СЭПР и СЭПС)
+5. Индекс потребительских цен (источник: расчёт на основе данных ЕМИСС)
+<!-- 5. Уровень безработицы, рассчитанный как отношение численности безработных к рабочей силе (источник: расчёт на основе данных ЕМИСС) -->
+<!-- 6. Реальная заработная плата, полученная как частное от деления номинальной заработной платы и индекса потребительских цен (источник: расчёт на основе данных ЕМИСС, СЭПР и СЭПС) -->
+
+В распоряжении автора имеется более широкий набор данных об этих и иных индикаторах экономической активности в регионах России на месячном уровне с середины 2000-х гг., полученный аналогичным образом и доступный по запросу.
+
+В российской статистической традиции индексы, отражающие динамику показателей, публикуются трёх видах: период к предыдущему периоду (м/м), период к аналогичному периоду предыдущего года (г/г), период к аналогичному периоду предыдущего года накопленным итогом. При этом индекс в базисной форме чаще всего не рассчитывается и не публикуется. В целях настоящей работы индексы в базисной форме (100 = среднее значение 2016 года) для показателей (1)-(3) получены расчётным методом.
+
+В общем случае получение индекса в базисной форме из цепных приростов м/м возможно путем последовательного перемножения цепных значений:
+
+\begin{align}
+    I^B_t  = I_{t_0} \cdot \prod_{i = t_{0} + 1}^{t} I_i^{MoM} (\#eq:eq1)
+\end{align}
+
+где $I_i^{MoM} = x_t/x_{t-1}$ - значение цепного индекса (м/м), $I^B_t$ - значение базисного индекса. 
+
+Методология Росстата по расчёту большинства индексов предполагает регулярный пересмотр данных. В публикациях сборника СЭПР информация о пересмотрах ранее опубликованных данных не приводится. В мониторинге СЭПС Росстат приводит соответствующие ряды с учётом уточнений и корректировок. При этом мониторинг СЭПС содержит меньший набор показателей, зачастую не включает цепные индексы (м/м), а также ограничивается периодом с начала 2009 года. В условиях, когда доступ к наиболее актуальному винтажу данных отсутствует, применение формулы \@ref(eq:eq1) не является корректным. 
+
+Для решения этой проблемы используется следующий подход:
+
+1.  Для каждого из показателей собираются опубликованные в сборниках СЭПР и мониторинге СЭПС значения темпов роста м/м и г/г (при наличии)
+2. К первым двенадцати значениям индексов м/м применяется формула \@ref(eq:eq1), где значение $I_{t_0}$ принимается за $100$. Результатом этой операции являются первые двенадцать значений базисного индекса
+3. Последующие значения базисного индекса рассчитываются с применением следующей формулы:
+\begin{align}
+    I^B_t  = I^B_{t-12} \cdot I_t^{YoY} \label{eq2}, t \geq 13
+\end{align}
+где $I_t^{YoY} = x_t/x_{t-12}$ - значение индекса г/г
+4. Полученные базисный индекс нормируется на среднемесячное значение 2016 года:
+\begin{align}
+    \hat{I}^B_t  = \frac{I^B_t}{\frac{1}{12} \sum_{k=\text{1M2016}}^{k=\text{12M2016}} I^B_k}
+\end{align}
+
+Описанный алгоритм позволяет получить базисные индексы существенно более высокого качества: они содержат меньше экстремальных значений, более чёткую сезонную волну, а также не приводят к искажению динамики показателя.
+
+Полученные индексы взвешиваются по долям соответствующих отраслей в ВРП для получения регионального индикатора экономической активности (прокси-ВРП). Доли соответствующих видов деятельности рассчитаны по данным о структуре ВРП^[<https://rosstat.gov.ru/statistics/accounts>] следующим образом:
+
+1. Промышленность: разделы B ("Добыча полезных ископаемых"), C ("Обрабатывающие производства"), D ("Обеспечение электрической энергией, газом и паром; кондиционирование воздуха"), E ("Водоснабжение; водоотведение, организация сбора и утилизация отходов, деятельность по ликвидации загрязнений")
+2. Строительство: раздел F ("Строительство")
+3. Розничная торговля: раздел G ("Торговля оптовая и розничная; ремонт автотранспортных средств и мотоциклов")
+4. Платные услуги: разделы L ("Деятельность по операциям с недвижимым имуществом"), M ("Деятельность профессиональная, научная и техническая"), R ("Деятельность в области культуры, спорта, организации досуга и развлечений"), S ("Предоставление прочих видов услуг")
+
+# Приложение 2. Величина оценённых региональных фискальных мультипликаторов, рекурсивная идентификация {-}
+
+```{r OwnYReg, tab.id = "OwnYReg"}
+horizonY %>%
+  filter(h %in% c(0,6,12)) %>%
+  mutate(value = paste0(sprintf("%.2f", round(value,2)), ifelse(sig68, '*', ''))) %>%
+  select(-c(sig68, grp)) %>%
+  pivot_wider(names_from = 'h', values_from = 'value') %>%
+  rename_with(~c('OKATO', 'Регион', '0', '6', '12')) %>%
+  left_join(peakY) %>%
+  flextable() %>%
+  add_header_row(values = c(" ", "Горизонт (месяцев)", "Пиковый эффект"), colwidths = c(2,3,2)) %>%
+  add_header_row(values = c(" ", "Отклик выпуска"), colwidths = c(2,5)) %>%
+  tabForm(cap = 'Мультипликатор выпуска, шок расходов 1% ВРП') 
+```
+
+# Приложение 3. Величина оценённых спилловер-эффектов региональных бюджетных шоков, рекурсивная идентификация {-}
+
+```{r YSpill, tab.id = "YSpill"}
+tableregionspillY %>%
+  select(-c('3','SP3')) %>%
+  flextable() %>%
+  tabForm(cap = 'Спилловер-эффекты на динамику выпуска') %>%
+  labelizor(part = "header", labels = c("OKATO_id" = "OKATO", "OKATO" = "Регион", "SP0" = "0", "SP6" = "6", "SP12" = "12")) %>%
+  add_header_row(values = c(" ", "Spill-out эффект", "Spill-in эффект"), colwidths = c(2,3,3)) 
+```
+
+# Приложение 4. Результаты, полученные путем наложения знаковых ограничений на импульсные отклики {-}
+
+В качестве альтернативной схемы идентификации фискальных шоков мы применяем знаковые ограничения на импульсные отклики, следуя @mountfordWhatAreEffects2009. В ходе этой процедуры в каждом регионе идентифицируются три ортогональных шока. Предполагается, что региональный шок спроса одновременно увеличивает выпуск и инфляцию, а шок предложения приводит к их движению в противоположном друг другу направлении. В обоих случаях шок не оказывает воздействия на величину государственный расходов. Эти ограничения накладыаются только на период шока (1 месяц). Шок госрасходхов определяется как случайное возмущение, приводящее к росту государственных расходов и выпуска на горизонте 3 месяцев без ограничений на знак отклика инфляции. Резюме используемх знаковых ограничений приведено в таблице ниже:
+
+```{r}
+data.frame(`Шок` = c('Совокупный спрос', 'Совокупное предложение', 'Государственные расходы'),
+           `Совокупный выпуск` = c('+', '-', '+'),
+           `Инфляция` = c('+', '+', '?'),
+           `Государственные расходы` = c('0', '0', '+')
+           , check.names=F) %>%
+  flextable() %>%
+  footnote(i = 1:3, j = 1,
+  value = as_paragraph(
+    c("Ограничения накладываются на импульсные отклики в момент шока", 
+    "Ограничения накладываются на импульсные отклики на 3 месяца, включая период шока")
+    ),
+  ref_symbols = c("1", "1", "2"),
+  part = "body"
+  ) %>%
+  tabForm(cap = 'Знаковые ограничения на импульсные отклики модели')
+```
+
+Поскольку процедура расчёта импульсных откликов с использованием знаковых ограничений и байесовской оценки оказывается существенно более ресурсоёмкой, период анализа ограничивается 12 месяцами. Пиковая медианная величина регионального мультипликатора при использовании альтернативной идентификационной схемы оказывается несколько выше (1.71 на горизонте 1 месяца), при этом в большинстве регионов величина эффекта существенно снижается уже к концу первого года после шока. Качественные выводы о факторах отличий региональных мультипликаторов остаются неизменными по сравнению с основным текстом работы. Единственным дополнительным фактором, который положительно ассоциируется с величной мультипликатора, оказывается доля занятости в частном секторе. Это свидетельствует о более выраженной реакции частных компаний на фискальные стимулы.
+
+
+```{r}
+MODEL <- '3v1_1p-MN-SV-1000-15000'
+path <- paste0('../Results/', MODEL)
+data <- readRDS(paste0(path,'/',MODEL,'-regIRFs-sign.RDS'))
+codes <- read_xlsx('../Technical/regioncodes.xlsx')
+data <- data %>%
+  left_join(codes %>% select(region = Abbrev, name_rus = `Rus Name`, name_eng = Name, OKATO_id))
+grid <- read.table('../Technical/rus_grid_reg2.csv', header=TRUE, sep=',', encoding = 'UTF-8') %>%
+  mutate(code = ifelse(nchar(code)==10, paste0('0', code), code),
+         code = case_when(
+           code == '71001000000' ~ '71000000000',
+           code == '11001000000' ~ '11000000000',
+           TRUE ~ code
+         )) %>%
+  select(-code_FD, -FD) %>% rename("name" = "name_short")
+data <- data %>%
+  left_join(grid %>% select(OKATO_id=code, name))  %>%
+  relocate(c(OKATO_id, name, name_rus, name_eng), .before = 'variable')
+# NORMALIZE IRFs ----
+## Own Output Multiplier ---- 
+# IRF represents 100 * dlog(y) / dlog(exp) = 100 dy/y * exp/dexp
+# Divide by exp to get 100 (dy/y) / dexp - percentage point change in economic activity index 
+# Following a unit (rubble per capita) change in exp 
+# Then multiply by 0.01 * GRP per capita to normalize shock size to 1% of per capita GRP
+normalize <- data %>%
+  ungroup() %>%
+  filter(region == source, variable == 'exp', shock == 'exp', h == 0) %>% 
+  select(region, n = Q50)
+multY <- data %>%
+  filter(region == source,
+         variable == 'y',
+         shock == 'exp') %>%
+  left_join(grp) %>%
+  left_join(normalize) %>%
+  group_by(region) %>%
+  mutate(value = Q50/n,
+         sig68 = Q16*Q84>0,
+         sig80 = Q10*Q90>0) %>%
+  pivot_wider(names_from = 'variable', values_from = 'value') %>%
+  mutate(value = y / exp_level * grp * 0.01,
+         Q16 = Q16 / n / exp_level * grp * 0.01,
+         Q84 = Q84 / n / exp_level * grp * 0.01)
+### Own Output Response by Region ----
+peakY <- multY %>%
+  select(OKATO_id, name_rus, h, value, sig68, grp) %>%
+  group_by(OKATO_id, name_rus) %>%
+  mutate(absvalue = abs(value)) %>%
+  summarize(h = h[which.max(absvalue)], value = value[which.max(absvalue)], sig = sig68[which.max(absvalue)]) %>%
+  ungroup() %>%
+  mutate(value = paste0(sprintf("%.2f", round(value,2)), ifelse(sig, '*', ''))) %>%
+  select(-sig) %>%
+  rename_with(~c('OKATO', 'Регион', 'Горизонт', 'Значение'))
+horizonY <- multY %>%
+  select(OKATO_id, name_rus, h, value, sig68, grp) %>%
+  ungroup() %>%
+  select(-region) %>%
+  filter(h %in% c(0,1,2,3,6,12))
+# Own Output Response
+tableY <- multY %>%
+  select(region, OKATO_id, name_rus, h, value, Q16, Q84, sig68, grp) %>%
+  group_by(h) %>%
+  reframe(o = c(min(value), quantile(value, QUANTILES), max(value), 
+                weighted.mean(value, grp), weighted.median(value, grp), mean(sig68),
+                mean(Q16), mean(Q84)), 
+          type = c('Min', paste0(QUANTILES*100,'%'), 'Max', 'Weighted Mean',
+                   'Weighted Median', '% sig', 'CU_l', 'CU_u')) %>%
+  pivot_wider(names_from = 'h', values_from = 'o')
+YMax <- max(tableY[3,] %>% as.numeric(), na.rm=T) %>% round(.,2)
+YMaxHor <- names(tableY)[which.max(tableY[3,] %>% as.numeric())]
+```
+
+```{r OwnYSign, tab.id = "OwnYSign"}
+tableY %>%
+  filter(!type %in% c('Weighted Median'
+                      ,'CU_l','CU_u'
+                      )
+         )%>%
+  mutate(type = c('Минимум',
+                  '15-й перцентиль',
+                  'Медиана',
+                  '85-й перцентиль',
+                  'Максимум',
+                  'Среднее',
+                  'Доля значимых'
+                  #,'Средняя нижняя граница 68% интервала',
+                  #'Средняя верхняя граница 68% интервала'
+                  )) %>%
+  select(`Статистика`=type, `0`, `1`, `3`, `6`, `12`) %>%
+  flextable() %>%
+  add_header_row(values = c(" ", "Горизонт (месяцев)"), colwidths = c(1,5)) %>%
+  add_footer_lines('Примечание: оценки получены на основе GVAR-модели на выборке 2009-2024 гг. с наложением знаковых ограничений на импульсные отклики. Под мультипликатором понимается процентное изменение индекса деловой активности в ответ на увеличение госрасходов, эквивалентное 1% ВРП. Расчёт произведён по 79 регионам.') %>%
+  footnote(i = 6:7, j = 1,
+  value = as_paragraph(
+    c("При расчёте среднего в качестве весов используется региональный подушевой ВРП", 
+    "Для проверки значимости используются 68%-е достоверные интервалы")
+    ),
+  ref_symbols = c("1", "2"),
+  part = "body"
+  ) %>%
+  tabForm(cap = 'Оценка мультипликатора государственных расходов в российских регионах')
+```
+
+```{r OwnYDynRegSign, fig.cap='Динамика мультипликатора государственных расходов в российских регионах', fig.width=6.59, dpi=170}
+multY %>%
+  ggplot() +
+  geom_line(aes(x=h, y=value, group = OKATO_id), linewidth = 0.5, linetype = 'dotted', colour = 'gray') +
+  geom_line(data = tableY %>%
+              filter(type == 'Weighted Mean') %>%
+              pivot_longer(-type) %>%
+              mutate(name = as.factor(name)),
+            aes(x=name, y=value, group = 1, linetype = 'dashed'), colour = 'black', linewidth = 1.25) +
+  geom_line(data = tableY %>%
+              filter(type == '50%') %>%
+              pivot_longer(-type) %>%
+              mutate(name = as.factor(name)),
+            aes(x=name, y=value, group = 2, linetype = 'solid'), colour = 'black', linewidth = 1.25) +
+  scale_linetype_identity(breaks = c('solid', 'dashed'),
+                          labels = c("Медиана", "Взвешенное среднее"),
+                          guide = "legend") +
+  guides(linetype=guide_legend(ncol=2)) +
+  theme_hse() +
+  labs(x = 'Горизонт, месяцев',
+       y = '%',
+       linetype = "Guide name"
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  ylim(c(tableY[1,-1] %>% min(), tableY[5,-1] %>% max())) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    legend.key.size = unit(3,"line")
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+`r figNote('оценки получены на основе GVAR-модели на выборке 2009-2024 гг. с наложением знаковых ограничений на импульсные отклики. Отклики выпуска в отдельных регионах изображены пунктирной линией.')`
+
+```{r OwnYMapSign, fig.cap='Оценка мультипликатора госрасходов на горизонте 1 месяца. Примечание: ', fig.width=6.59, dpi=400}
+hor = 1
+limits <- multY %>%
+  filter(h == hor) %>%
+  pull(value) %>%
+  quantile(GRADIENT_QUANTILE_LIMITS)
+SIG_OPACITY <- 0.75
+multY %>% 
+  filter(h == hor) %>%
+  filter(sig68) %>%
+  ggplot() +
+  geom_rect(aes(xmin=1, xmax=2, ymin=1, ymax=2, fill=value)) +
+  #scale_alpha_manual(values = c('TRUE' = SIG_OPACITY, 'FALSE' = 1)) + 
+  #scale_pattern_alpha_manual(values = c('TRUE' = SIG_OPACITY, 'FALSE' = 0))  +
+  scale_fill_gradient(limits = limits, oob = squish, low = "grey", high = "black") + 
+  # Тонкая настройка подписей: <краткое название субъекта> <+/-> <значение>%
+  geom_text(aes(x = 1.5, y = 1.5, label = paste0(name,'\n', round(value,2), '%')),
+            col="white", size=12, lineheight = 0.3) +
+  facet_geo(~ OKATO_id, grid = grid) +
+  labs(x='', y='') +
+  theme(panel.background = element_rect(fill = 'lightgray', colour = 'black'),
+        legend.position = 'none',
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.caption = element_text(size = 20),
+        strip.placement = "bottom",
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        line = element_blank(),
+        panel.spacing = unit(-2, "points")
+  ) 
+```
+`r figNote('оценки получены на основе GVAR-модели на выборке 2009-2024 гг. с наложением знаковых ограничений на импульсные отклики. Величина отклика обозначена градиентом.')`
+
+```{r YregressSign, tab.id = "YregressSign"}
+hor <- 1
+modelData <- horizonY %>%
+  filter(h == hor) %>%
+  rename(y = value) %>%
+  select(-c(sig68,grp)) %>%
+  left_join(explanatory %>% select(-c(OKATO,sport,state,culture,utilities)))
+# GRP and Structure
+m1 <- lm(y ~ log(GRP) + extraction + industry + construction, modelData,
+             weight = GRP)
+m1r <- coeftest(m1, vcov = vcovHAC, save = TRUE)
+# Liquidity constraints
+m2 <- lm(y ~ decile_coeff + poverty, modelData,
+             weight = GRP)
+m2r <- coeftest(m2, vcov = vcovHAC, save = TRUE)
+# Labour market
+m3 <- lm(y ~ tightness + unemprate + private_empl_share + sme_empl_share, modelData,
+             weight = GRP)
+m3r <- coeftest(m3, vcov = vcovHAC, save = TRUE)
+# Trade
+m4 <- lm(y ~ imgrp + exsh + imsh, modelData,
+             weight = GRP)
+m4r <- coeftest(m4, vcov = vcovHAC, save = TRUE)
+# Budget
+m5 <- lm(y ~ defense + security + economy + social + debtgrp, modelData,
+             weight = GRP)
+m5r <- coeftest(m5, vcov = vcovHAC, save = TRUE)
+# Table
+ts <- officer::fp_tabs(
+  officer::fp_tab(pos = .4, style = "decimal"),
+  officer::fp_tab(pos = 1.2, style = "decimal")
+)
+tab <- huxreg("ВРП" = m1, "Неравенство" = m2, "Рынок труда" = m3, "Внешняя торговля" = m4, "Бюджет" = m5, number_format = 2, statistics = c("N" = "nobs", 
+      "R^2" = "r.squared", "R^2 adj." = "adj.r.squared", "F statistic" = "statistic",
+      "P value" = "p.value"), bold_signif = 0.1, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01),
+      coefs = c("Константа" = "(Intercept)"
+                ,"Логарифм ВРП на душу" = "log(GRP)",
+                "Доля добычи в ВРП" = "extraction",
+                "Доля обработки в ВРП" = "industry",
+                "Доля строительства в ВРП" = "construction",
+                "Децильный коэффициент" = "decile_coeff",
+                "Уровень бедности" = "poverty",
+                "Доля занятости в частном секторе" = "private_empl_share",
+                "Доля занятости на МСП" = "sme_empl_share",
+                "Напряжённость рынка труда" = "tightness",
+                "Безработица" = "unemprate",
+                "Импорт/ВРП" = "imgrp",
+                "Отгрузка товаров из других регионов" = "imsh",
+                "Отгрузка товаров в другие регионы" = "exsh",
+                "Расходы на нацоборону" = "defense",
+                "Расходы на нацбезопасность" = "security",
+                "Социальные расходы" = "social",
+                "Расходы на нацэкономику" = "economy",
+                "Госдолг к ВРП" = "debtgrp"
+                )) %>%
+  set_align(., '.')
+tab <- tab[-seq(3,39,2),]
+tab %>%
+  as_flextable() %>%
+  add_footer_lines('Примечание: в качестве зависимой переменной используется оценка регионального мультипликатора на горизонте 1 месяца. Наблюдения в регрессии взвешены по региональному подушевому ВРП') %>%
+  tabForm(cap = 'Факторы гетерогенности отклика выпуска на шок госрасходов') %>%
+  flextable::align(align = 'left', part = 'all') %>%
+  prepend_chunks(j = 2:5, as_chunk("\t")) %>%
+  tab_settings(j = 2:5, value = ts)
+```
