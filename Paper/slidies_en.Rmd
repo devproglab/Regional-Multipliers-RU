@@ -203,7 +203,7 @@ source('../R/3. mult.R', encoding = 'UTF-8')
     \draw[decorate,decoration={brace,mirror}] (rN.south west) --
         node[below,align=center] (regnameN) {Region $N$\\VAR} (rN.south east);
     \node[blocksmalltext, below = 0.5 cm of r2] (tradeflows) {Trade flows matrix};
-    \node[blocksmalltext, align = center, below = 0.5 cm of tradeflows] (external) {Weakly exogenous};
+    \node[blocksmalltext, align = center, below = 0.5 cm of tradeflows] (external) {External variables};
     \draw[->] (regname1.south) |- (tradeflows);
     \draw[<-] (tradeflows) -| (regnameN.south);
     \draw[->] (tradeflows.south) -- (external);
@@ -582,9 +582,9 @@ tableYOut %>%
   kableExtra::footnote(general = "the estimates are obtained using a GVAR model on the 2009-2024 sample using a recursive identification scheme. In all cases, the shock size is normalized to 1% of the GRP of the shock source region.", general_title = "Note: ", footnote_as_chunk = T, threeparttable = T) 
 ```
 
-## Regional Inequality:
+## Interregional Inequality
 
-```{r IneqDyn, fig.cap='Оценённая динамика индекса Джини для подушевого ВРП', fig.width=6.59, dpi=170}
+```{r IneqDyn, fig.cap='Estimated Gini coefficient for per capita GRP', dpi=170, fig.height=5}
 rr <- readRDS('../Data/explanatory.RDS') %>%
   select(OKATO, OKATO_id, GRP) %>%
   arrange(GRP) %>%
@@ -679,4 +679,5 @@ ineqDf %>%
     # panel.border = element_rect(colour = "black", fill = NA)
   )
 ```
-`r figNote('scenario 1 assumes an increase in government spending in 10 regions with the highest per capita GRP (Tyumen, Sakhalin, Magadan, Murmansk, Arkhangelsk regions, Moscow, St. Petersburg, the Sakha Republic, Kamchatka Krai, the Komi Republic), scenario 2 - in 10 regions with the lowest per capita GRP (the Republics of Ingushetia, Chechnya, Kabardino-Balkaria, Tyva, Karachay-Cherkessia, Dagestan, North Ossetia, Adygea, Buryatia, Ivanovo region). The estimates are obtained on the basis of the GVAR model on the 2009-2024 sample using a recursive identification scheme. When calculating the Gini coefficient, the regions are weighted by population. The bold line indicates the value of the Gini coefficient in 2022 (0.315)')`
+
+Scenario 1: fiscal expansion in 10 regions with the highest per capita GRP, scenario 2 - in 10 regions with the lowest per capita GRP. The bold line indicates the value of the Gini coefficient in 2022 (0.315)
