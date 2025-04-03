@@ -1,0 +1,682 @@
+---
+title: "The Heterogeneous Impact of Fiscal Policy on Russian Regions"
+author: "Ilya Gulenkov"
+institute: |
+  | International Laboratory for Macroeconomic Analysis
+  | Department of Theoretical Economics
+  | FES HSE
+date: "April 2025"
+output: beamer_presentation
+fontsize: 10pt
+lang: en
+header-includes:
+  - \usepackage{tikz} 
+  - \usepackage[T2A]{fontenc}
+  - \usepackage{booktabs}
+bibliography: ../Literature/RFS.bib
+biblio-style: apalike
+---
+
+```{r Setup, echo = F, include = FALSE}
+opts <- list(template = "../Technical/tikz2pdf-cyr.tex")
+engine <- 'tikz'
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+trace(grDevices:::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+```
+
+```{r Data, echo = F}
+set.seed(123)
+library(tidyverse)
+library(readxl)
+library(ggtext)
+library(geofacet)
+library(scales)
+library(ggpattern)
+library(ggridges)
+library(ggbreak) 
+library(spatstat)
+library(sandwich)
+library(lmtest)
+library(kableExtra)
+library(ggcorrplot)
+library(cluster)    # clustering algorithms
+library(flextable)
+library(huxtable)
+library(stargazer)
+options(scipen=9999)
+set_flextable_defaults(font.family = 'Times New Roman')
+tabForm <- function(x, cap) {
+  x %>%
+  autofit() %>%
+  set_table_properties(layout = "autofit") %>%
+  flextable::font(fontname = 'Times New Roman', part = 'all') %>%
+  padding(padding = 0, part = "all") %>%
+  flextable::align(align = "center", part = "all") %>%
+  flextable::align(align = 'justify', part = 'footer') %>%
+  colformat_double(big.mark = ",", digits = 2, na_str = "N/A")
+  # %>%
+  # flextable::set_caption(cap, align_with_table = F, word_stylename = "Table Caption", fp_p = officer::fp_par(text.align = "justify"))
+}
+figNote <- function(text) {
+  officer::fpar(paste0('Примечание: ', text), fp_p=officer::fp_par(text.align = 'justify', padding.top = 0), fp_t = officer::fp_text_lite(font.size = 11))
+}
+# LOAD STYLING ----
+source("../Technical/hse_theme.R")
+select <- dplyr::select
+hse_colours <- c("#102D69", "#1656A6", "#BFBFBF", "#E61F3D", "#11A0D7", "#FFD746", "#029C63", "#EB681F")
+# LOAD DATA ----
+QUANTILES <- c(0.15, 0.5, 0.85)
+SIG_OPACITY <- 0.75
+GRADIENT_QUANTILE_LIMITS <- c(0.15,0.85)
+source('../R/3. mult.R', encoding = 'UTF-8')
+```
+
+## Motivation
+
+- High regional differentiation in Russia
+
+- Monetary policy transmission depends on regional characteristics [@napalkovRazlichiyaEffektahEdinoy2021;@zverevaVliyanieVnutriregionalnogoNeravenstva2024; @zverevaReakciyaBankovskihStavok2024]:
+
+    - GRP size and structure
+    - Local market size
+    - Trade geography and intensity
+    - Income inequality
+    - Employment structure
+    - ...
+    
+- Fiscal policy in a monetary union: countercyclican and redistributive role
+    
+- The reaction of Russian regions to fiscal policy shocks has not been extensively studied 
+
+## Aim & Contribution
+
+- Aim: estimate the impact of regional government expenditures on Russian regions' economy
+
+- Methodology: global vector autoregression (GVAR), sample period - 2009 - 2024, 79 regions
+
+- Contribution:
+
+    - Fiscal policy effects in Russia: we estimate region-specific multipliers instead of a single national one
+    - Heterogeneous effects of macroeconomic policy in a monetary union: multipliers depend on economy size, income inequality and employment structure
+    - Cross-regional spillover effects: the size of the effects depends on the size of the source economy and its trade patterns
+
+## Literature: Fiscal Multiplier
+
+- Fiscal multiplier in the U.S. lies between 0.8 and 1.5 [@rameyCanGovernmentPurchases2011]
+
+- The size of the multiplier depends on the business cycle phase [@auerbachFiscalMultipliersRecession2011], the source of economic shocks [@ghassibeStateDependenceFiscal2022], monetary policy reaction and income distribution patterns [@broerFiscalMultipliersHeterogeneousagent2023]
+
+- For Russia estimates vary between 0.1 - 0.9 and depend on the methodology, sample period, budget level and expenditure category [@kudrinByudzhetnayaPolitikaKak2017;@vlasovFiskalnyeMultiplikatoryRossii2018;@zyablickiyOcenkaFiskalnyhMultiplikatorov2020]
+
+## Literature: Local Multiplier and Spatial Effects
+
+- Subnational data allows to estimate local fiscal multipliers [@nakamuraFiscalStimulusMonetary2014;@chodorow-reichGeographicCrossSectionalFiscal2019]:
+
+    - Controls for common country-level factors
+    - Higher estimation efficiency due to cross-sectional variation
+    - Spatial effects can be studiedd
+
+- Omission of spatial effects can bias regional multiplier estimates downwards [@auerbachLocalFiscalMultipliers2020]
+
+- Spatial links between regions and region clusters in Russia have been extensively documented in the literature [@demidovaGosudarstvennyeRashodyNa2021;@demidovaModeliEkonomicheskogoRosta2016]  
+
+## Model Structure
+
+```{r ModelStructure, fig.cap = "GVAR Model Structure", fig.ext='png', fig.width = 6.5, engine.opts = opts, engine=engine}
+\usetikzlibrary{calc,positioning,patterns,angles,intersections,ext.paths.ortho,shapes.multipart,fit,matrix,shadows,shadows.blur,arrows,shapes,arrows.meta,positioning,decorations.pathreplacing,quotes}
+\newcommand*\circled[1]{\tikz[baseline=(char.base)]{
+            \node[shape=circle,draw,inner sep=2pt] (char) {#1};}}
+\newsavebox{\test}
+\savebox{\test}{\begin{tikzpicture}[%
+    ,node distance=5mm
+    ,>=latex'
+    ,blockbig/.style = {%
+    ,draw
+    ,minimum height=10mm,minimum width=28mm
+    ,align=center
+    }
+    ,blocksmall/.style = {%
+    ,draw
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center
+    }
+    ,blocksmalltext/.style = {%
+    ,draw=black!60
+    ,minimum height=10mm,minimum width=20mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ,textsmall/.style = {%
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ,every path/.style={->} 
+    ] 
+\node[blocksmalltext, anchor = south west] (exp1) {Budget\\spending};
+\node[below = 0.1 cm of exp1] (num) {\circled{1}};
+%\node[blocksmalltext, right = of exp1] (wage1) {Wages};
+\node[blocksmalltext, below left = 0.5 cm and -0.5 cm of exp1] (y1) {Output};
+\node[blocksmalltext, below right = 0.5 cm and -0.5 cm of exp1] (infl1) {Inflation};
+%\draw[<->] (exp1.east) -- (wage1.west);
+%\draw[<->] (wage1.south west) -- (y1.north east);
+%\draw[<->] (infl1.east) -- ($(infl1.east) +(0.2,0)$) |- (wage1.east); 
+\draw[<->] (y1.east) -- (infl1.west);
+\draw[<->] (y1.west) -- ($(y1.west) +(-0.2,0)$) |- (exp1.west);
+\draw[<->] (infl1.east) -- ($(infl1.east) +(0.2,0)$) |- (exp1.east); 
+\end{tikzpicture}}
+\begin{tikzpicture}[%
+    ,node distance=5mm
+    ,>=latex'
+    ,blockbig/.style = {%
+    ,draw
+    ,minimum height=10mm,minimum width=28mm
+    ,align=center
+    }
+    ,blocksmall/.style = {%
+    ,draw
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center
+    }
+    ,blocksmalltext/.style = {%
+    ,draw=black!60
+    ,minimum height=10mm,minimum width=20mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ,textsmall/.style = {%
+    ,minimum height=7mm,minimum width=10mm
+    ,align=center,
+    font={\footnotesize}
+    }
+    ]
+    \node (r1) {\usebox{\test}};
+    \node[right = of r1.south east] (r2) {$\dots$};
+    \node[right = 1.5 cm of r1] (rN) {\usebox{\test}};
+    \draw[decorate,decoration={brace,mirror}] (r1.south west) --
+        node[below,align=center] (regname1) {Region 1\\VAR} (r1.south east);
+    \draw[decorate,decoration={brace,mirror}] (rN.south west) --
+        node[below,align=center] (regnameN) {Region $N$\\VAR} (rN.south east);
+    \node[blocksmalltext, below = 0.5 cm of r2] (tradeflows) {Trade flows matrix};
+    \node[blocksmalltext, align = center, below = 0.5 cm of tradeflows] (external) {Weakly exogenous};
+    \draw[->] (regname1.south) |- (tradeflows);
+    \draw[<-] (tradeflows) -| (regnameN.south);
+    \draw[->] (tradeflows.south) -- (external);
+    \draw[->] (external.west) -- ($(regname1.west|-external.west) + (-0.25,0)$) node[fill=white] {\circled{2}} |- (regname1.west);
+    \draw[->] (external.east) -- ($(regnameN.east|-external.east) + (0.25,0)$) node[fill=white] {\circled{2}} |- (regnameN.east);
+    \node[below = 0 cm of external.south] {Spillover effects};
+    \draw[thick] ($(r1.north west) +(-0.2,0.2)$) rectangle ($(external.south-|rN.south east) + (0.2,-0.5)$);
+    \node[blocksmalltext, above right = 1.1 cm of rN] (urals) {Urals Price};
+    \node[blocksmalltext, right = of urals] (fedbudg) {Federal\\budget};
+    \node[blocksmalltext, above = of urals] (exrate) {USD/RUB};
+    \node[blocksmalltext, above = of fedbudg] (i) {RUONIA};
+    \draw[<->] (urals.north) -- (exrate.south);
+    \draw[<->] (urals.east) -- (fedbudg.west);
+    \draw[<->] (i.south) -- (fedbudg.north);
+    \draw[<->] (exrate.east) -- (i.west);
+    \draw[<->] (exrate.south east) -- (fedbudg.north west);
+    \draw[<->] (i.south west) -- (urals.north east);
+    \node[textsmall, above = -0.05 cm of $(exrate.north)!0.5!(i.north)$, align=center] (global) {Global variables};
+    \draw[thick] ($(urals.north west) +(-0.2,2.6)$) rectangle ($(fedbudg.south east) + (0.2,-0.2)$);
+    \draw[->] ($(urals.west) +(-0.2,0)$) -| node[near start, above, xshift=-0.05cm] {Common shocks} ($(tradeflows.north|-urals.west) + (0,-1)$);
+    \draw[<-] ($(urals.south)!0.5!(fedbudg.south) +(0,-0.2)$) |- node[midway, below, align = center] {Government reaction function} ($(rN.east) + (0.2,0)$);   
+    \node[above = -0.25 cm of global] {\circled{3}};
+\end{tikzpicture}
+```
+
+## Data
+
+- **Monthly** data for 79 Russian regions:
+
+    - Reflects short outside lag of fiscal transmission
+    - Allows to justify the identification strategy
+
+- Three variable blocks:
+
+    1. **Regional variables**: logs of output index and expenditures of the consolidated regional budget in per capita terms, log-difference of the regional CPI
+    2. **External variables**: weighted combination of regional variables for neighbouring regions. Weight matrix is constructed based on interregional trade for 2016
+    3. **Global variables**: RUONIA rate, logs of Urals price, USD/RUB exchange rate, per capita revenue and expenditure of the federal budget
+
+## GVAR Specification
+
+Endogenous variables in region $i$ evolve according to a VAR:
+
+$$
+x_{it} = a_{i0} + a_{i1} t + \sum_{l=1}^{p_i} \Phi_{il} x_{i,t-l} + \sum_{l=0}^{q_i} \Lambda_{il} x^*_{i,t-l} + \sum_{l=0}^{s_i} D_{il} \omega_{t-l} + \varepsilon_{it}
+$$
+
+- $x_{it}$ - vector of endogenous variables
+- $x^*_{i,t}$ - vector of external variables
+- $\omega_t$ - vector of global variables
+- $p_i$, $q_i$ and $s_i$ determine the lag order (1 in the baseline specification)
+
+Global variables are modelled in a separaet dominant-unit VAR and react to regional economic dynamics:
+
+- Interest rate is determined according to a Taylor rule variant which includes weighted regional output and inflation
+- Federal budget revenues depend on weighted regional output, oil prices and the exchange rate
+
+## Estimation
+
+- Each regional model has 39 coefficients and 9 covariance matrix elements $\rightarrow$ "curse of dimensionality"
+
+- We opt for a Bayesian estimation using the Minnesota prior. The prior assumes that the explanatory power is higher:
+
+    - For own lags compared to other variable lags
+    - For more recent lags than for more distant lags
+    
+- Important assumption: each region is a small open economy [@pesaranModelingRegionalInterdependencies2004]:
+
+    - External variables are treated as weakly exogenous
+    - Regional models are estimated separately
+    - Global model solution is obtained algebraically using the weighting matrix
+    
+- The model is estimated with stochastic volatility to capture periods of markedly high volatility (2014-2015 and 2022)
+
+## Identification Strategy
+
+- Reduced-form VAR residuals cannot be interpreted in a structural manner since they are correlated with each other
+
+- One needs to impose restrictions on the covariance matrix and perform orthogonalization
+
+- Baseline identification strategy is recursive:
+  
+    - Regional supply and demand shocks do not influence government expenditure within one month
+    - Regional budget expenditure can have a contemporaneous impact on output and inflation
+
+- Main results are qualitatively robust to using sign restrictions as an alternative identification strategy
+
+- N.B. Identification in GVAR models is local: the shock is orthogonal to other regional shocks, but might be correlated with shocks in other regions
+
+    - In practice this correlation is small
+    
+## Government Spending Multiplier
+
+- Regions are very different in their size and budget spending $\rightarrow$ IRFs have to be transformed for comparability
+
+- The government spending multiplier is defined as a percentage change in output after a government spending shock equivalent to 1% of the regional per capita GRP:
+
+$$
+mult^y_{ijh} = IRF^{y,g}_{ijh} \times \frac{1}{\bar{g}_j} \times \overline{GRP}_j \times 0.01
+$$
+
+- $IRF^{y,g}_{ijh}$ - IRF of output in region $i$ to a government spending shock in region $j$ at horizon $h$
+
+- $\bar{g}_j$ - average per capita government expenditure in region $j$
+
+- $\overline{GRP}_j$ - average per capita GRP
+
+## Regional Government Spending Multiplier
+
+```{r OwnYDynReg, fig.width=9, dpi=170}
+multY %>%
+  ggplot() +
+  geom_line(aes(x=h, y=value, group = OKATO_id), linewidth = 0.65, linetype = 'dotted', colour = 'gray') +
+  geom_line(data = tableY %>%
+              filter(type == 'Weighted Mean') %>%
+              pivot_longer(-type) %>%
+              mutate(name = as.factor(name)),
+            aes(x=name, y=value, group = 1, linetype = 'dashed'), colour = 'black', linewidth = 1.25) +
+  geom_line(data = tableY %>%
+              filter(type == '50%') %>%
+              pivot_longer(-type) %>%
+              mutate(name = as.factor(name)),
+            aes(x=name, y=value, group = 2, linetype = 'solid'), colour = 'black', linewidth = 1.25) +
+  scale_linetype_identity(breaks = c('solid', 'dashed'),
+                          labels = c("Median", "Weighted Average"),
+                          guide = "legend") +
+  guides(linetype=guide_legend(ncol=2)) +
+  theme_hse() +
+  labs(x = 'Horizon',
+       y = '%',
+       linetype = "Guide name"
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  ylim(c(tableY[1,-1] %>% min(), tableY[5,-1] %>% max())) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    legend.key.size = unit(3,"line")
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+
+
+## Sources of Heterogeneity: Potential Channels
+
+- Liquidity constraints for households and firms [@bernardiniHeterogeneousGovernmentSpending2020;@debuque-gonzalesLocalFiscalMultipliers2021]
+
+- The source of financing and regional debt dynamics [@chodorow-reichGeographicCrossSectionalFiscal2019]
+
+- Govrenment spending composition and allocation between labour- and capital-intensive industries [@juarrosHeterogeneousSpendingHeterogeneous2023]
+
+- Trade linkages: spillover effects are stronger in regions with a trade deficit [@bernardiniHeterogeneousGovernmentSpending2020; @duporRegionalConsumptionResponses2023]
+
+
+## Sources of Heterogeneity: Hypotheses
+
+1. Size and structure of the economy: real GRP per capita, share of mining, manufacturing and construction in GRP
+1. Income distribution: decile coefficient and share of population with incomes below the poverty line
+1. Regional labor market: unemployment rate, number of unemployed per vacancy, share of employment in non-state-owned organizations, share of employment in small and medium-sized enterprises
+1. Trade relations: share of imports from abroad in GRP, ratio of shipment of products from other regions of Russia and to other regions of Russia to total regional output
+1. Regional budget: level of regional debt to GRP (excluding budget loans), share of regional budget expenditures on national defense, security, national economy and social sphere
+
+## Main Conclusions: Regional Multipliers
+
+- Median multiplier reaches `r YMax`% after `r YMaxHor` and dies out gradually
+
+- The effect is stronger in regions with:
+
+    - High GRP per capita (market size and lower propensity to import)
+    - High share of construction in GRP
+    - High income inequality (population groups with a high propensity to consume)
+    - Predominance of employment in large enterprises (structure of budget recipients)
+    - High share of expenditure on the national economy in the budget (productive expenditure)
+
+## Spillover Effects: Definition 
+
+We calculate two measures of spillover effects:
+
+1. **Spill-out effect** reflects how strongly other regions react to a government spending shock in a given region:
+
+$$
+SO_j = \sum_{i\neq j} \omega_{i} mult^y_{ijh}
+$$
+
+2. **Spill-in effect** reflects the sensitivity of a given region to government spending shocks in other regions:
+
+$$
+SI_i = \sum_{j\neq i} \omega_j mult^y_{ijh}
+$$
+
+
+The responses are weighted using regional GRP: $\omega_i=\frac{GRP_i}{\sum_k GRP_k}$
+
+## Main Conclusions: Spillover Effects
+
+- The average spill-out effect at a 1-year horizon is `r tableYOut[6,6] %>% as.numeric() %>% round(.,2)`%. A stronger response is found in:
+
+    - Larger economies
+    - Regions with a lower share of intra-Russia exports
+    - Regions with a higher share of foreign imports
+    - Regions with a higher unemployed-vacancy ratio
+    
+- The average spill-in effect at a 1-year horizon is `r tableYIn[6,6] %>% as.numeric() %>% round(.,2)`%. A stronger response is found in:
+
+    - Regions with a higher share of manufacturing in GRP
+    - Regions with lower income inequality
+    - Regions with a lower unemployed-vacancy ratio
+
+## Discussion and Conclusions
+
+- The results are within the range of existing estimates, but higher than the national multiplier for Russia:
+
+    - Regional budgets vs. federal budget: expenditure structure
+    - General equilibrium effects at the national level: Central Bank response, inflation expectations, debt trajectory
+    - Dependent variable: GDP vs. monthly GRP proxy (covers from 30% to 80% of GVA in regions)
+    
+- The multiplier is higher in larger regions which can systematically conduct looser fiscal policy due to a higher and more stable tax base:
+
+    - A join fiscal stimulus in top-10 richest regions slightly increases intraregional Gini coefficient (the effect is mediated by spillovers)
+    
+- Price level reaction to a government spending shock: significantly negative in approximately 50% of the cases
+
+    - Contradicts traditional views but is often encountered empirically [@jorgensenInflationResponseGovernment2022]
+    - The importance of supply-side fiscal policy effects [@jorgensenInflationResponseGovernment2022; @choiAreGovernmentSpending2022]
+    
+## Sources {.allowframebreaks}
+
+\fontsize{6pt}{7.2}\selectfont
+
+::: {#refs .blah}
+:::
+
+<!-- ## Пространственные взаимосвязи между переменными {.fragile} -->
+
+<!-- ```{r Crosscorr, tab.id = "Crosscorr", tab.cap='Средние коэффициенты корреляции между переменными и остатками модели в регионах России'} -->
+<!-- summ$crosscorrdata[,1:3] %>% -->
+<!--    as.data.frame(.) %>% -->
+<!--    rownames_to_column() %>% -->
+<!--    left_join(summ$crosscorr[,1:3] %>% -->
+<!--    as.data.frame(.) %>% -->
+<!--    rownames_to_column(), by = 'rowname') %>% -->
+<!--    relocate(exp.y, .before = y.x) %>% -->
+<!--    relocate(y.y, .before = pi.x) %>% -->
+<!--    kbl(col.names = c("Коэффициент корреляции", -->
+<!--                            "Данные", -->
+<!--                            "Остатки модели", -->
+<!--                            "Данные", -->
+<!--                            "Остатки модели", -->
+<!--                            "Данные", -->
+<!--                            "Остатки модели"),  -->
+<!--        digits = 2, booktabs = T) %>% -->
+<!--   add_header_above(c(" " = 1, "Госрасходы" = 2, "Выпуск" = 2, "Инфляция" = 2)) %>% -->
+<!--   kableExtra::footnote(general = "в таблице приведено число и доля регионов, для которых средний коэффициент корреляции между региональными переменными (или остатками уравнений модели) лежит в указанном диапазоне", general_title = "Примечание: ", footnote_as_chunk = T) -->
+<!-- ``` -->
+
+
+## Regional Government Spending Multiplier {.fragile}
+
+```{r OwnY, tab.id = "OwnY", tab.cap = 'Regional Government Spending Multiplier in Russia'}
+tableY %>%
+  filter(!type %in% c('Weighted Median'
+                      ,'CU_l','CU_u'
+                      )
+         )%>%
+  mutate(type = c('Min',
+                  '15th percentile',
+                  'Median',
+                  '85th percentile',
+                  'Maximum',
+                  paste0('Average', footnote_marker_number(1, "latex")),
+                  paste0('Share of significant', footnote_marker_number(2, "latex"))
+                  #,'Средняя нижняя граница 68% интервала',
+                  #'Средняя верхняя граница 68% интервала'
+                  )) %>%
+  select(`Статистика`=type, `0`, `1`, `3`, `6`, `12`, `24`) %>%
+  kbl(digits = 2, escape = F, format = "latex", booktabs = T) %>%
+  kableExtra::kable_styling(font_size = 7) %>%
+  add_header_above(c(" " = 1, "Горизонт (месяцев)" = 6))  %>%
+  kableExtra::footnote(general = 'the estimates are using a GVAR model on the sample of 2009-2024 using a recursive identification scheme. The multiplier is understood as the percentage change in the business activity index in response to an increase in government spending equivalent to 1% of GRP.', general_title = 'Note: ', number = c('When calculating the average, regional per capita GRP is used as weights', '68% credible intervals are used to test significance.'), threeparttable = T)
+```
+
+## Heterogeneity Regressions I {.fragile}
+
+```{r Yregress, tab.id = "Yregress", tab.cap = 'Regional Fiscal Multiplier Heterogeneity'}
+hor <- 3
+modelData <- horizonY %>%
+  filter(h == hor) %>%
+  rename(y = value) %>%
+  select(-c(sig68,grp)) %>%
+  left_join(explanatory %>% select(-c(OKATO,sport,state,culture,utilities)))
+# GRP and Structure
+m1 <- lm(y ~ log(GRP) + extraction + industry + construction, modelData,
+             weight = GRP)
+m1r <- coeftest(m1, vcov = vcovHAC, save = TRUE)
+# Liquidity constraints
+m2 <- lm(y ~ decile_coeff + poverty, modelData,
+             weight = GRP)
+m2r <- coeftest(m2, vcov = vcovHAC, save = TRUE)
+m2r <- coeftest(m2, vcov = vcovHAC, save = TRUE)
+# Labour market
+m3 <- lm(y ~ tightness + unemprate + private_empl_share + sme_empl_share, modelData,
+             weight = GRP)
+m3r <- coeftest(m3, vcov = vcovHAC, save = TRUE)
+# Trade
+m4 <- lm(y ~ imgrp + exsh + imsh, modelData,
+             weight = GRP)
+m4r <- coeftest(m4, vcov = vcovHAC, save = TRUE)
+# Budget
+m5 <- lm(y ~ defense + security + economy + social + debtgrp, modelData,
+             weight = GRP)
+m5r <- coeftest(m5, vcov = vcovHAC, save = TRUE)
+# Table
+tab <- huxreg("GRP" = m1, "Inequality" = m2, "Labour market" = m3, number_format = 2, statistics = c("R^2 adj." = "adj.r.squared",
+      "P value" = "p.value"), bold_signif = 0.1, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01))
+tab <- tab[-seq(3,23,2),]
+tab %>%
+  set_font_size(5) %>%
+  set_bottom_padding(0) %>%
+  set_top_padding(0) %>%
+  set_width(1) %>%
+  set_col_width(col = 1, 0.3) %>%
+  set_all_borders(brdr(0.5, "solid")) %>%
+  set_align(col = 2, value = 'center') %>%
+  set_align(col = 3, value = 'center') %>%
+  set_align(col = 4, value = 'center')
+```
+
+## Heterogeneity Regressions II {.fragile}
+
+```{r Yregress2, tab.id = "Yregress2", tab.cap = 'Regional Fiscal Multiplier Heterogeneity'}
+tab <- huxreg("External trade" = m4, "Budget" = m5, number_format = 2, statistics = c("N" = "nobs",
+      "R^2 adj." = "adj.r.squared",
+      "P value" = "p.value"), bold_signif = 0.1, stars = c(`*` = 0.1, `**` = 0.05, `***` = 0.01))
+tab <- tab[-seq(3,19,2),]
+tab %>%
+  set_font_size(5) %>%
+  set_bottom_padding(0) %>%
+  set_top_padding(0) %>%
+  set_width(1) %>%
+  set_col_width(col = 1, 0.3) %>%
+  set_all_borders(brdr(0.5, "solid")) %>%
+  set_align(col = 2, value = 'center') %>%
+  set_align(col = 3, value = 'center')
+```
+
+## Spillover Effects: Summary Statistics
+
+```{r SpillY, tab.id = "SpillY", tab.cap = 'Government spending spillover Effects in Russian regions'}
+tableYOut %>%
+  select(c(1,2,5,6,7)) %>%
+  left_join(tableYIn %>% select(c(1,2,5,6,7)), by = 'Статистика', suffix = c('','.')) %>%
+  mutate(`Статистика` = c('Min',
+                  '15th percentile',
+                  'Median',
+                  '85th percentile',
+                  'Maximum',
+                  paste0('Average', footnote_marker_number(1, "latex")),
+                  paste0('Share of significant', footnote_marker_number(2, "latex"))
+                  )) %>%
+  kbl(digits = 2, escape = F, booktabs = T,
+      col.names = c('Statistic', 
+                    '0', '6', '12', '24',
+                    '0', '6', '12', '24')) %>%
+  kableExtra::kable_styling(font_size = 7) %>%
+  add_header_above(c(" " = 1, "Spill-out" = 4, "Spill-in" = 4)) %>%
+  add_header_above(c(" " = 1, "Horizon (months)" = 8)) %>%
+  kableExtra::footnote(general = "the estimates are obtained using a GVAR model on the 2009-2024 sample using a recursive identification scheme. In all cases, the shock size is normalized to 1% of the GRP of the shock source region.", general_title = "Note: ", footnote_as_chunk = T, threeparttable = T) 
+```
+
+## Regional Inequality:
+
+```{r IneqDyn, fig.cap='Оценённая динамика индекса Джини для подушевого ВРП', fig.width=6.59, dpi=170}
+rr <- readRDS('../Data/explanatory.RDS') %>%
+  select(OKATO, OKATO_id, GRP) %>%
+  arrange(GRP) %>%
+  left_join(codes %>% select(region = Abbrev, name_rus = `Rus Name`, name_eng = Name, OKATO_id)) %>%
+  filter(!is.na(region)) %>%
+  arrange(GRP)
+poor10 <- rr$region[1:10]
+rich10 <- rr$region[70:79]
+
+regineq <- read_excel('../Data/explanatory.xlsx', sheet = 'Ineq') %>%
+  filter(OKATO_id %in% grp$OKATO_id) %>%
+  select(-region) %>%
+  left_join(codes %>% select(OKATO_id, region = Abbrev)) %>% 
+  relocate(region, .before = OKATO_id)
+g <- apply(regineq[,-c(1:4)] %>% as.matrix(), 2, DescTools::Gini, weights = regineq$population, na.rm=T)
+# richest
+# with spillovers
+grps <- regineq %>%
+  select(region, population, `2022`) %>%
+  arrange(region)
+mults <- readRDS(paste0(path,'/',MODEL,'-joint_10richest_chol.RDS')) %>%
+    filter(variable == 'y') %>%
+    ungroup() %>%
+    select(region, h, Q50) %>%
+    pivot_wider(names_from = 'h', values_from = 'Q50') %>%
+    arrange(region)
+sim <- as.vector(grps[,3]) * (1 + mults[,-c(1)]/100)
+sim <- cbind(region = grps$region, population = grps$population, sim)
+giniR <- apply(sim[,-c(1:2)] %>% as.matrix(), 2, DescTools::Gini, 
+                weights = sim$population, 
+                na.rm=T)
+# without spillovers
+mults2 <- mults
+mults2[which(!mults$region %in% rich10),-1] <- 0 
+sim2 <- as.vector(grps[,3]) * (1 + mults2[,-c(1)]/100)
+sim2 <- cbind(region = grps$region, population = grps$population, sim2)
+giniR2 <- apply(sim2[,-c(1:2)] %>% as.matrix(), 2, DescTools::Gini, 
+                weights = sim2$population, 
+                na.rm=T)
+# poorest
+mults <- readRDS(paste0(path,'/',MODEL,'-joint_10poorest_chol.RDS')) %>%
+    filter(variable == 'y') %>%
+    ungroup() %>%
+    select(region, h, Q50) %>%
+    pivot_wider(names_from = 'h', values_from = 'Q50') %>%
+    arrange(region)
+sim <- as.vector(grps[,3]) * (1 + mults[,-c(1)]/100)
+sim <- cbind(region = grps$region, population = grps$population, sim)
+giniP <- apply(sim[,-c(1:2)] %>% as.matrix(), 2, DescTools::Gini, 
+                weights = sim$population, 
+                na.rm=T)
+# without spillovers
+mults2 <- mults
+mults2[which(!mults$region %in% poor10),-1] <- 0 
+sim2 <- as.vector(grps[,3]) * (1 + mults2[,-c(1)]/100)
+sim2 <- cbind(region = grps$region, population = grps$population, sim2)
+giniP2 <- apply(sim2[,-c(1:2)] %>% as.matrix(), 2, DescTools::Gini, 
+                weights = sim2$population, 
+                na.rm=T)
+# plot
+ineqDf <- data.frame(h=0:24, gini = c(giniP, giniR, giniR2), group = c(rep('Scenario 2', 25), rep('Scenario 1', 25), rep('Scenario 1 (no spillovers)', 25)))
+ineqDf %>%
+  ggplot() +
+  geom_line(aes(x=h, y=gini, group=group, linetype = group), linewidth = 1.25) +
+  geom_hline(yintercept = g['2022'] %>% round(.,3), colour = 'black', linewidth = 1) +
+  #annotate("text", x=15,y=g['2022'],label = paste0('Уровень 2022 года (', g['2022'] %>% round(.,3), ')'), vjust = -1, family = "Times New Roman") +
+  scale_linetype_manual(values = c("Scenario 1" = "dashed", "Scenario 1 (no spillovers)" = "dotdash", "Scenario 2" = "dotted"),
+                          guide = "legend") +
+  theme_hse() +
+  guides(linetype=guide_legend(ncol=3)) + 
+  labs(x = 'Horizon, months',
+       y = NULL,
+       linetype = "Guide name"
+       # title = "Экономические показатели российских регионов",
+       # caption = "Источник: Росстат, Федеральное Казначейство, расчёты автора"
+  ) + 
+  #ylim(c(g['2022']-0.002, g['2022']+0.01)) +
+  scale_y_continuous(breaks = seq(from = 0.312, to = 0.32, by = 0.001)) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 18),
+    axis.text = element_text(size = 20),
+    axis.title.y.left = element_markdown(size = 18, margin = margin(r = 0, l = 0, unit = "cm")),
+    axis.title.x = element_markdown(size = 18, angle = 0, vjust = 1.05, margin = margin(r = 0, l = 0, unit = "cm")),
+    legend.key.size = unit(1.5,"line")
+    # plot.title = element_markdown(lineheight = 1.1, size = 20),
+    # plot.subtitle = element_markdown(lineheight = 1.1, size = 18),
+    # plot.caption = element_markdown(family = "HSE Sans", lineheight = 1.1, hjust = 1, size = 16, face = "italic"),
+    # # aspect.ratio = 0.56,
+    # strip.text = element_markdown(size = 16,lineheight = 0.4),
+    # strip.background = element_rect(fill = 'white'),
+    # panel.border = element_rect(colour = "black", fill = NA)
+  )
+```
+`r figNote('scenario 1 assumes an increase in government spending in 10 regions with the highest per capita GRP (Tyumen, Sakhalin, Magadan, Murmansk, Arkhangelsk regions, Moscow, St. Petersburg, the Sakha Republic, Kamchatka Krai, the Komi Republic), scenario 2 - in 10 regions with the lowest per capita GRP (the Republics of Ingushetia, Chechnya, Kabardino-Balkaria, Tyva, Karachay-Cherkessia, Dagestan, North Ossetia, Adygea, Buryatia, Ivanovo region). The estimates are obtained on the basis of the GVAR model on the 2009-2024 sample using a recursive identification scheme. When calculating the Gini coefficient, the regions are weighted by population. The bold line indicates the value of the Gini coefficient in 2022 (0.315)')`
